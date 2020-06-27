@@ -166,7 +166,7 @@ def _init_celltypes(pop, celltypes):
     return celltypes
 
 
-def _init_genes(pop, genes):
+def _init_genedict(pop, genes):
     '''
     Filters out all invalid gene names (i.e. genes not in pop['filtered_genes'], and returns the filtered list.
     It also prints out all genes that were removed.
@@ -178,18 +178,20 @@ def _init_genes(pop, genes):
     genes : list
         The list of genes to filter.
     '''
-    genelist = pop['filtered_genes']
-
-    invalid, geneidxs = [], []
-    for gene in genes[:]: # Filter out invalid gene names.
-        if gene not in genelist:
+    genedict = {}
+    invalid = []
+    for gene in genes: # Filter out invalid gene names.
+        if gene not in pop['filtered_genes']:
             invalid.append(gene)
-            genes.remove(gene)
         else: # If the gene is valid, get its index.
-            geneidxs.append(np.where(genelist == gene)[0])
+            # NOTE: pop['filtered_genes'] is a list, not a np.array.
+            genedict[gene] = pop['filtered_genes'].index(gene)
 
     if len(invalid) > 0: # If any genes were removed, print the result
         print('The following gene names are invalid, and were removed: ' + ', '.join(invalid))    
      
-    return genes, geneidxs
+    return genedict
 
+
+def _init_subpops(pop, samples=None, refpops=None):
+    pass

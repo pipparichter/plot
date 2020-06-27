@@ -111,7 +111,6 @@ class BarPlot(plot.Plot):
             
             # Sort the filtered data into self.nbins evenly-spaced bins.
             data, bins = np.histogram(filtered, bins=self.nbins, range=(0, self.binmax))
-            print(len(filtered))
             data = data / ncells # Make the data a percentage.
 
         if self.bins is None: # If the bin attribute has not been filled... 
