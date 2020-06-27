@@ -12,7 +12,7 @@ from plot import plot
 
 class BarPlot(plot.Plot):
     # Class constructor.
-    def __init__(self, pop, gene, celltype, samples, grid=False, nbins=25):
+    def __init__(self, pop, gene, celltype, samples, nbins=25):
         '''
         Initializes the BarPlot object.
 
@@ -38,20 +38,18 @@ class BarPlot(plot.Plot):
         self.samples = plot._init_samples(pop, samples)
         nplots = len(self.samples)
        
-        super().__init__(pop, grid, nplots) # Call the parent class initializer.
+        super().__init__(pop, nplots) # Call the parent class initializer.
 
         # Adjust the filepath.
         self.filepath.append('barplots')
-        if grid:
-            filename = f'{gene}_{celltype}_barplot_grid.png'
+        if nplots > 1:
+            self.filename = f'barplot_grid.png'
         else:
-            self.filepath.append(self.samples[0])
-            filename = f'{gene}_{celltype}_barplot.png'
-        self.filepath.append(filename)
+            self.filename = f'barplot.png'
 
         self.gene = gene
-        assert gene in pop['filtered_genes'], f'{gene} is an invalid gene name.' # Make sure the gene is valid.
-        self.gene_idx = pop['filtered_genes'].index(gene) # pop['filtered_genes'] is a list, not an array.
+        assert gene in pop['filtered_genes'], f'{gene} is an invalid gene name.' 
+        self.geneidx = pop['filtered_genes'].index(gene)
         
         self.celltype = celltype
         assert celltype in pop['gmm_types'], 'Invalid cell type.'  # Make sure the cell type name is valid.
@@ -104,15 +102,16 @@ class BarPlot(plot.Plot):
             bins = np.zeros(self.nbins + 1, dtype=float)
         else: 
             celltypes = self.pop['samples'][sample]['cell_type']
-            cell_idxs = np.array(celltypes == self.celltype) # Get indices of cells with the correct celltype.
+            cellidxs = np.array(celltypes == self.celltype) # Get indices of cells with the correct celltype.
             ncells = np.count_nonzero(celltypes == self.celltype) # The number of {celltype} cells.
             
             # NOTE: M_norm is of type scipy.sparse.csc.csc_matrix.
-            unfiltered = self.pop['samples'][sample]['M_norm'].toarray()[self.gene_idx] # Get gene data for a sample.
-            filtered = unfiltered[cell_idxs] # Filter by celltype.
+            unfiltered = self.pop['samples'][sample]['M_norm'].toarray()[self.geneidx] # Get gene data for a sample.
+            filtered = unfiltered[cellidxs] # Filter by celltype.
             
             # Sort the filtered data into self.nbins evenly-spaced bins.
             data, bins = np.histogram(filtered, bins=self.nbins, range=(0, self.binmax))
+            print(len(filtered))
             data = data / ncells # Make the data a percentage.
 
         if self.bins is None: # If the bin attribute has not been filled... 
@@ -128,12 +127,11 @@ class BarPlot(plot.Plot):
         binmax = 0.0    
         for sample in self.samples: # Get the max gene expression value across all samples
             celltypes = self.pop['samples'][sample]['cell_type']
-            cell_idxs = np.where(celltypes == self.celltype) # Get indices of cells with the correct celltype.
+            cellidxs = np.where(celltypes == self.celltype) # Get indices of cells with the correct celltype.
             
             # NOTE: M_norm is of type scipy.sparse.csc.csc_matrix.
-            unfiltered = self.pop['samples'][sample]['M_norm'].toarray()[self.gene_idx] # Get gene data for a sample.
-            filtered = unfiltered[cell_idxs] # Filter by celltype.
-            unfiltered = self.pop['samples'][sample]['M_norm'].toarray()[self.gene_idx] # Get gene data for a sample.
+            unfiltered = self.pop['samples'][sample]['M_norm'].toarray()[self.geneidx] # Get gene data for a sample.
+            filtered = unfiltered[cellidxs] # Filter by celltype.
           
             samplemax = filtered.max()
             if samplemax > binmax:
@@ -179,7 +177,7 @@ class BarPlot(plot.Plot):
 
         # Make the graph prettier!
         axes.set_title(f'{self.gene} in {sample} ({self.celltype})')
-        if not self.grid:
+        if self.nplots == 1:
             axes.set_xticks(np.round(self.bins, 3))
         else: # Draw fewer tick marks if the graph is a grid (looks much nicer). 
             axes.set_xticks(np.round(self.bins, 3)[::5])
@@ -225,8 +223,6 @@ class BarPlot(plot.Plot):
         testdata = self.data
         if ref is None:
             refdata = self.ctrl_data
-            # Get the number of cells of the correct cell type from the default control sample.
-            refcells = np.count_nonzero(self.pop['samples'][self.ctrls[0]]['cell_type'] == self.celltype)
         else: # If no reference BarPlot is specified, use the control data. 
             assert not ref.grid, 'Reference BarPlot object cannot be a grid.'
             # Make sure the inputted BarPlot is L1-compatible with the test BarPlot.
@@ -234,8 +230,6 @@ class BarPlot(plot.Plot):
                     'Reference BarPlot is not compatible.'
             refsample = ref.samples[0]
             refdata = ref.data[refsample] # ref.data should be a dictionary with only one element.
-            # Get the number of cells of the correct cell type from the reference distribution.
-            refcells = np.count_nonzero(ref.pop['samples'][refsample]['cell_type'] == self.celltype)
 
         if sample is None:
             samples = self.samples
@@ -244,37 +238,11 @@ class BarPlot(plot.Plot):
     
         l1data = {}
         for s in samples:
-            # Get the number of cells of the correct cell type.
-            testcells = np.count_nonzero(self.pop['samples'][s]['cell_type'] == self.celltype)
-            l1data[s] = l1(testdata[s], refdata, testcells, refcells)
+            l1 = np.linalg.norm(testdata[s] - refdata, ord=1)
+            if testdata[s].mean() > refdata.mean():
+                l1 *= -1
+            l1data[s] = l1
             
         return l1data
-
-
-# Accessory functions --------------------------------------------------------------------------
-
-def l1(testdata, refdata, testcells, refcells):
-    '''
-    Calculates the L1 distance between two sets of BarPlot data.
-
-    Parameters
-    ----------
-    testdata : np.array
-        The data from a particular sample from a BarPlot.
-    refdata : np.array
-        The data from the reference sample from a BarPlot.
-    testcells : int
-        The number of cells of a particular type in the testdata sample.
-    refcells : int
-        The number of cells of a particular type in the refdata sample.
-    '''
-    testdata = testdata / testcells # Scale the test data.
-    refdata = refdata / refcells # Scale the reference data.
-
-    l1 = np.linalg.norm(testdata - refdata, ord=1)
-    if testdata.mean() > refdata.mean():
-        l1 *= -1
-
-    return l1
 
 

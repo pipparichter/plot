@@ -17,7 +17,7 @@ import popalign as PA
 
 class Plot():
     # Class constructor.
-    def __init__(self, pop, grid=False, nplots=1):
+    def __init__(self, pop, nplots):
         '''
         Initializes a Plot object.
 
@@ -32,10 +32,10 @@ class Plot():
             grid. If grid=False, nplots must be None.
         '''
         self.filepath = [pop['output'], 'plots'] # Initialize a filepath.
+        self.filename = None
         
         self.pop = pop # Store the pop object.
         
-        self.grid = grid
         self.nplots = nplots
         self.figure, self.axes = None, None # these attributes will store the figure and axes objects.
         self.nrows, self.ncols = PA.nr_nc(nplots)
@@ -56,11 +56,11 @@ class Plot():
         Initializes the backing figure and axes. This function is called only when the graph needs
         to be displayed.
         '''
-        if self.grid:
+        if self.nplots > 1:
             self.figure, self.axes = plt.subplots(nrows=self.nrows, ncols=self.ncols, 
                     sharex=True, sharey=True, figsize=(30, 30))
             self.axes = self.axes.flatten().tolist()
-        elif not self.grid:
+        elif self.nplots == 1:
             self.figure = plt.figure(figsize=(20, 20))
             self.axes = [plt.axes([0, 0, 1, 1])] # Creates a list of axes with length of one.
         
@@ -90,25 +90,33 @@ class Plot():
 
     # Public methods ----------------------------------------------------------------
 
-    def save(self):
+    def save(self, filename=None):
         '''
         Saves a plot to a subdirectory.
+
+        Parameters
+        ----------
+        filename : str
+            The name under which to save the plot. If None, the default filename (self.filename) is used.
         '''
         assert self.plotted, 'A figure has not yet been created. The plot() method must be called.'
-
+        
         for i in range(1, len(self.filepath)): # Make all necessary directories.
             filepath = os.path.join(*self.filepath[:i])
             PA.mkdir(filepath)
         
+        if filename is None: # If None, use the default filename.
+            filename = self.filename
+
         # NOTE: See this link [https://docs.python.org/2/tutorial/controlflow.html#unpacking-argument-lists]
         # for more information on the '*' operator.
-        filepath = os.path.join(*self.filepath) # Combine the filepath into a valid path name.
-        self.figure.savefig(filepath, dpi=200) # Save the figure to the specified directory.
+        loc = os.path.join(*self.filepath, filename) # Combine the filepath into a valid path name.
+        self.figure.savefig(loc, dpi=200, bbox_inches='tight') # Save the figure to the specified directory.
 
-        print(f'Plot object saved to {filepath}.')
+        print(f'Plot object saved to {loc}.')
    
 
-# Accessory functions ---------------------------------------------------------------
+# Functions for verifying and initializing attributes ---------------------------------------------------
 
 def _init_samples(pop, samples):
     '''
@@ -170,13 +178,18 @@ def _init_genes(pop, genes):
     genes : list
         The list of genes to filter.
     '''
-    invalid = []
+    genelist = pop['filtered_genes']
+
+    invalid, geneidxs = [], []
     for gene in genes[:]: # Filter out invalid gene names.
-        if gene not in pop['filtered_genes']:
+        if gene not in genelist:
             invalid.append(gene)
             genes.remove(gene)
+        else: # If the gene is valid, get its index.
+            geneidxs.append(np.where(genelist == gene)[0])
+
     if len(invalid) > 0: # If any genes were removed, print the result
         print('The following gene names are invalid, and were removed: ' + ', '.join(invalid))    
-    
-    return genes
+     
+    return genes, geneidxs
 
