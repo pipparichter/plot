@@ -12,7 +12,7 @@ from plot import plot
 
 class BarPlot(plot.Plot):
     # Class constructor.
-    def __init__(self, pop, gene, celltype, samples, nbins=25):
+    def __init__(self, pop, gene=None, celltype=None, samples=None, nbins=25):
         '''
         Initializes the BarPlot object.
 

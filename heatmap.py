@@ -157,7 +157,7 @@ class HeatmapPlot(plot.Plot):
                 data[i, j] = l1
         
         t1 = time.time()
-        print(f'{celltype} data gathered: {t1 - t0}')
+        print(f'{celltype} data gathered: {t1 - t0} seconds')
 
         if self.cluster: # If clustering is set to True...
             t0 = time.time()
@@ -177,7 +177,7 @@ class HeatmapPlot(plot.Plot):
                 self.xaxis[index] = genes[sorter]
             
             t1 = time.time()
-            print(f'{celltype} data clustered: {t1 - t0}')
+            print(f'{celltype} data clustered: {t1 - t0} seconds')
 
         return data
 
