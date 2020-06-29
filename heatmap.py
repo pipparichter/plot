@@ -150,11 +150,16 @@ class HeatmapPlot(plot.Plot):
             
             for j in range(ngenes):
                 gene = genes[j]
-                
-                # Create an expression distribution for a particular gene, sample, and celltype.
-                dist = barplot.BarPlot(self.pop, gene, celltype, sample, nbins=25)
-                l1 = dist.calculate_l1()[sample] # Get the L1 metric for the distribution (reference is control by default).
-                data[i, j] = l1
+                ncells = np.count_nonzero(self.pop['samples'][sample]['cell_type'] == celltype)
+                mincells = 50 # The minumum number of cells needed to make a valid distribution
+               
+                if ncells > mincells:
+                    # Create an expression distribution for a particular gene, sample, and celltype.
+                    dist = barplot.BarPlot(self.pop, gene, celltype, sample, nbins=25)
+                    l1 = dist.calculate_l1()[sample] # Get the L1 metric for the distribution (reference is control by default).
+                    data[i, j] = l1
+                else: # If there are not enough cells to produce a valid distribution, input NaN. 
+                    data[i, j] = np.nan
         
         t1 = time.time()
         print(f'{celltype} data gathered: {t1 - t0} seconds')
@@ -182,27 +187,42 @@ class HeatmapPlot(plot.Plot):
         return data
 
 
-    def __sp_s_get_data(self, sample, index):
+    def __sp_s_get_data(self, sample, index): # IN PROGRESS
         '''
+        This function gets the data for a gene-by-subpopulation heatmap, for the subplot corresponding to the
+        inputted sample.
+
+        Parameters
+        ----------
+        sample : str
+            The sample for which the data is being gathered. If 'allsamples', then the overarching GMM is used.
+        index : int
+            The index corresponding to the subplot for which the data is being gathered. 
         '''
+        # Make sure feature data has been initialized, which is done in the onmf() function. 
+        assert 'C' in self.pop['samples'][sample].keys(), 'Feature data has not been initialized.'
+
         genes = self.xaxis[index].tolist()
         geneidxs = [self.genedict[gene] for gene in genes]
 
         if sample == 'allsamples':
             gmm, gmmtypes= self.pop['gmm'], self.pop['gmm_types']
-            genedata = PA.cat_data(self.pop, 'M_norm')
-            featdata = PA.cat_data(self.pop, 'C')
+            M = PA.cat_data(self.pop, 'M_norm')
+            C = PA.cat_data(self.pop, 'C')
             gmmtypes = self.pop['gmm_types']
         else:
             gmm, gmmtypes = self.pop['samples'][sample]['gmm'], self.pop['samples'][sample]['gmm_types']
-            genedata = self.pop['samples'][sample]['M_norm']
-            featdata = self.pop['samples'][sample]['C']
+            M = self.pop['samples'][sample]['M_norm']
+            C = self.pop['samples'][sample]['C']
         
-        genedata = genedata[geneidxs, :]
+        M = M[geneidxs, :]
+        prediction = gmm.predict(C) # Get subpopulation assignments from the selected GMM.
         
-        prediction = gmm.predict(featdata)
+        ncells = [] # Empty list to store number of cells per subpopulation.
+        for i in range(gmm.n_components): # For each subpopulation in the GMM...
+            cellidxs = np.where(prediction == i) # Get the indices of the cells in the ith subpopulation.
 
-    def __sp_rp_get_data(self, refpop):
+    def __sp_rp_get_data(self, refpop): # IN PROGRESS
         '''
         '''
         pass
