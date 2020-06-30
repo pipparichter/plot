@@ -4,6 +4,7 @@ import numpy as np
 from matplotlib import colors
 import sklearn as skl
 import time
+import scipy.cluster.hierarchy as sch
 
 import sys
 sys.path.insert(0, './popalign/popalign')
@@ -65,8 +66,8 @@ class HeatmapPlot(plot.Plot):
             nplots = len(self.subplots)
 
             # NOTE: self._axis needs to be a 2-D array to support clustering on a per-subplot basis.
-            self.xaxis = np.array([genelist] * nplots)
-            self.yaxis = np.array([self.samples] * nplots)
+            self.xlabels = np.array([genelist] * nplots)
+            self.ylabels = np.array([self.samples] * nplots)
             
             data_getter = self.__s_ct_get_data # Set the data retrieval function.
         
@@ -78,8 +79,8 @@ class HeatmapPlot(plot.Plot):
                 self.subplots = self.samples
                 nplots = len(self.subplots)
             
-            self.xaxis = np.ndarray([[genelist], ] * nplots)
-            self.yaxis = None # This will be a list of lists.
+            self.xlabels = np.ndarray([genelist] * nplots)
+            self.ylabels = None # This will be a list of lists.
             
             data_getter = self.__sp_s_get_data # Set the data retrieval function.
         
@@ -87,11 +88,13 @@ class HeatmapPlot(plot.Plot):
             self.subplots = self.refpops
             nplots = len(self.subplots)
 
-            self.xaxis = np.ndarray([[genelist], ] * nplots)
-            self.yaxis = None # This will be a list of lists.
+            self.xlabels = np.ndarray([genelist] * nplots)
+            self.ylabels = None # This will be a list of lists.
             
             data_getter = self.__sp_rp_get_data # Set the data retrieval function.
-       
+        
+        self.lms = [[None, None]] * nplots # A list in which to store linkage matrices.
+    
         super().__init__(pop, nplots) # Initialize underlying plot object.
         
         self.__get_data(data_getter) # Populate the data attribute using the data_getter function.
@@ -140,7 +143,9 @@ class HeatmapPlot(plot.Plot):
         t0 = time.time() # Get the start time for performance info.
         print(f'Gathering {celltype} data...\r', end='')
         
-        genes, samples = self.xaxis[index], self.yaxis[index]
+        nans = [] # List to store the indices to be poplulated with NaNs.
+
+        genes, samples = self.xlabels[index], self.ylabels[index]
         ngenes, nsamples = len(genes), len(samples)
 
         # Initialize a 2-D array, where there is a row for each sample and a column for each gene.
@@ -152,14 +157,17 @@ class HeatmapPlot(plot.Plot):
                 gene = genes[j]
                 ncells = np.count_nonzero(self.pop['samples'][sample]['cell_type'] == celltype)
                 mincells = 50 # The minumum number of cells needed to make a valid distribution
-               
-                if ncells > mincells:
-                    # Create an expression distribution for a particular gene, sample, and celltype.
-                    dist = barplot.BarPlot(self.pop, gene, celltype, sample, nbins=25)
-                    l1 = dist.calculate_l1()[sample] # Get the L1 metric for the distribution (reference is control by default).
-                    data[i, j] = l1
-                else: # If there are not enough cells to produce a valid distribution, input NaN. 
-                    data[i, j] = np.nan
+                
+                # NOTE: If I can figure out how to get the skl.metrics.pairwise_distances() function to accept
+                # NaNs without throwing an error (force_all_finite=False is not working), then I will change this
+                # to directly set data[i, j] = np.nan.
+                if ncells < mincells: # 
+                    nans.append((i, j))
+                    
+                # Create an expression distribution for a particular gene, sample, and celltype.
+                dist = barplot.BarPlot(self.pop, gene, celltype, sample, nbins=15)
+                l1 = dist.calculate_l1()[sample] # Get the L1 metric for the distribution (reference is control by default).
+                data[i, j] = l1
         
         t1 = time.time()
         print(f'{celltype} data gathered: {t1 - t0} seconds')
@@ -168,21 +176,24 @@ class HeatmapPlot(plot.Plot):
             t0 = time.time()
             print(f'Clustering {celltype} data...\r', end='')
 
-            axis = self.clusterinfo.get('axis', 'y')
-            clusteridxs = self.__cluster(data, axis=axis)
-            sorter = get_sorter(clusteridxs)
-            
-            if axis == 'y':
-                data = data[sorter, :]
-                self.yaxis[index] = samples[sorter]
+            axis = self.clusterinfo.get('axis', 'both') 
+            if axis == 'x':
+                data, genes = self.__cluster(data, index, axis='x')
+            elif axis == 'y':
+                data, samples = self.__cluster(data, index, axis='y')
+            elif axis == 'both':
+                data, genes  = self.__cluster(data, index, axis='x')
+                data, samples = self.__cluster(data, index, axis='y')
+            # Change the axes labels stored in the object to match the new ordering.
+            self.xlabels[index] = genes
+            self.ylabels[index] = samples
 
-            elif axis == 'x':
-                clusteridxs = self.__cluster(data, axis='x')
-                data = data[:, sorter]
-                self.xaxis[index] = genes[sorter]
-            
             t1 = time.time()
             print(f'{celltype} data clustered: {t1 - t0} seconds')
+
+        # For the datapoints corresponding to distributions with ncells < mincells, replace the current value with NaN.
+        for i, j in nans:
+            data[i, j] = np.nan
 
         return data
 
@@ -202,7 +213,7 @@ class HeatmapPlot(plot.Plot):
         # Make sure feature data has been initialized, which is done in the onmf() function. 
         assert 'C' in self.pop['samples'][sample].keys(), 'Feature data has not been initialized.'
 
-        genes = self.xaxis[index].tolist()
+        genes = self.xlabels[index].tolist()
         geneidxs = [self.genedict[gene] for gene in genes]
 
         if sample == 'allsamples':
@@ -227,38 +238,83 @@ class HeatmapPlot(plot.Plot):
         '''
         pass
 
-    def __cluster(self, matrix, axis='y'):
+    def __cluster(self, data, index, axis=None):
         '''
         Runs an agglomerative hierarchical clustering algorithm on the inputted matrix. It uses
-        the cluster settings inputted at Heatmap initialization.
+        the cluster settings inputted at Heatmap initialization. It returns the modified matrix, 
+        the reordered data labels, and the clustering model generated.
 
         Parameters
         ----------
         matrix : numpy.ndarray
             A 2-D array which contains Heatmap data.
-        along : str
-            One of 'rows' or 'cols'. If 'rows', the rows of the matrix are clustered; if 'cols', 
+        labels : numpy.array
+            An array which contains the data labels for the axis being sorted. 
+        axis : str
+            One of 'x' or 'y'. If 'y', the rows of the matrix are clustered; if 'x', 
             the columns of the matrix are clustered.
         '''
         if axis == 'x': # If clustering is to be carried out by column...
-            matrix = matrix.T # Get the transpose of the inputted matrix.
+            matrix = data.T # Get the transpose of the inputted matrix.
+            labels = self.xlabels[index]
+        elif axis == 'y':
+            matrix = data
+            labels = self.ylabels[index]
             
         # Retrieve cluster settings.
         metric = self.clusterinfo.get('metric', 'euclidean') # Get the distance metric, euclidian by default.
-        linkage = self.clusterinfo.get('linkage', 'complete' ) # Get the linkage type, complete by default.
+        linkage = self.clusterinfo.get('linkage', 'complete') # Get the linkage type, complete by default.
         nclusters = self.clusterinfo.get('nclusters', 3) # Get the number of clusters, 3 by default.
 
         # NOTE: This function returns a  matrix such that element {i, j} is the distance between 
         # the ith and jth vectors of the given matrix. 
-        # NOTE: A distance matrix is a 2-D  array) containing the distances, taken pairwise, 
-        # between the elements of a set. If there are N elements, this matrix will have size N×N.
         dists = skl.metrics.pairwise_distances(X=matrix, metric=metric) # Get the distance matrix.
         model = skl.cluster.AgglomerativeClustering(n_clusters=nclusters,
-                                                    affinity='precomputed',
+                                                    affinity='precomputed', # Distance matrix was precomputed.
                                                     linkage=linkage) # Create the clustering model.
-        # NOTE: Because we are inputting a distance matrix, affinity='precomputed'.
-        # [https://stackoverflow.com/questions/44834944/agglomerative-clustering-in-sklearn] 
-        return model.fit_predict(X=dists) # Return the clustering labels.
+
+        lm = sch.linkage(dists, method=linkage) # Get the linkage matrix.
+        # Store the linkage matrices for later use in plotting dendrograms.
+        if axis == 'x':
+            self.lms[index][0] = lm
+        elif axis == 'y':
+            self.lms[index][1] = lm
+
+        clusteridxs = model.fit_predict(X=dists) # Return the clustering labels.
+        sorter = get_sorter(clusteridxs) # Get the indice with which to sort the data and data labels.
+        
+        labels = labels[sorter] # Sort the labels to match the data.
+        if axis == 'y':
+            data = data[sorter, :] # Sort the data.
+        elif axis == 'x':
+            data = data[:, sorter] # Sort the data
+
+        return data, labels
+
+    def __plot_dendrogram(self, daxes, index):
+        '''
+        '''
+        xdax, ydax = daxes # Get the axes for the x and y-axis dendrograms.
+        lms = self.lms[index] # Get the linkage matrices for the selected subplot.
+
+        if lms[0] is not None: # If the x-axis was clustered...
+            lm = lms[0] # Retrieve the x-axis linkage matrix.
+            xdax.set_yticks([])
+            xdax.set_xticks([])
+            sch.dendrogram(lm, ax=xdax, 
+                           orientation='top', 
+                           color_threshold=0,
+                           above_threshold_color='black',
+                           no_labels=True)
+        if lms[1] is not None: # If the y-axis was clustered...
+            lm = lms[1] # Retrieve the y-axis linkage matrix.
+            ydax.set_yticks([])
+            ydax.set_xticks([])
+            sch.dendrogram(lm, ax=ydax, 
+                           orientation='left',
+                           color_threshold=0,
+                           above_threshold_color='black',
+                           no_labels=True)
 
     def __plotter(self, axes, index, color):
         '''
@@ -267,37 +323,67 @@ class HeatmapPlot(plot.Plot):
         Parameters
         ----------
         axes : matplotlib.axes.Axes
-            The axes on which to add the barplot. If None, new axes are created.
+            The axes of the subplot on which the graph will be plotted.
         index : 
-            The index of the celltype to be plotted (corresponds to a celltype in self.celltypes).
+            The index of the subplot to be plotted.
         color: str
             The name of a matplotlib.colors.Colormap to color the heatmap data. 
         '''
         assert isinstance(color, str), 'Color must be a string for a HeatMap object.'
         
+        axes.axis('off') # Turn off the axes frame.
+
+        # Create a layout for all the subcomponents of the heatmap...
+        nr, nc = self.nrows, self.ncols
+        sub = (index // nr, index % nc) # Get the coordinates for the subplot in the figure grid.
+        w, h = 1.0 / nc, 1.0 / nr # Get the width of a subplot column and height of a subplot row.
+        x0, y0 = (sub[0] * w, h * (nr - sub[1] - 1)) # Get the absolute coordinates of the origin of the subplot. 
+
+        plot_dendrograms = self.clusterinfo.get('plot_dendrograms', True)
+        # If cluster=True and plot_dendrograms is set to True (or left blank), plot the dendrograms.
+        if self.cluster and plot_dendrograms:
+            d = 0.075 * w # The thickness of the dendrogram plots.
+            mainw, mainh = 0.7 * w, 0.8 * h # The dimensions of the main axes.
+            
+            # Create axes for the x-and-y dendrograms.
+            ydax = self.figure.add_axes([x0, y0, d, mainh], frame_on=False)
+            xdax = self.figure.add_axes([x0 + d, y0 + mainh, mainw, d], frame_on=False)
+            self.__plot_dendrogram((xdax, ydax), index) # Plot the dendrograms.
+        else:
+            d = 0
+            mainw, mainh = 0.775 * w, 0.875 * h
+           
+        # Create axes for the main heatmap and the colorbar.
+        mainax = self.figure.add_axes([x0 + d, y0, mainw, mainh], frame_on=False)
+        cax = self.figure.add_axes([x0 + 0.95 * w, y0 + 0.1 * h, 0.05 * w , 0.6 * h], frame_on=False)
+           
+        # Retrieve the data and data labels for the subplot.
         subplot = self.subplots[index]
         data = self.data[subplot]
-        xaxis, yaxis = self.xaxis[index], self.yaxis[index]  
-
-        axes.imshow(data, cmap=plt.get_cmap(color), aspect='auto') # Auto scales the pixels according to the axes. 
-
-        # Make the graph prettier!
-        axes.set_xticks(np.arange(0, len(xaxis))) # Genes will be plotted along the x-axis (columns of self.data)
-        axes.set_yticks(np.arange(0, len(yaxis))) # Genes will be plotted along the y-axis (rows of self.data)
-
-        xlabels = axes.set_xticklabels(xaxis)
+        xlabels, ylabels = self.xlabels[index], self.ylabels[index]  
+        
+        # Plot the heatmap on the main axes.
+        cmap = plt.get_cmap(color) # Get the colormap.
+        cmap.set_bad(color='gray') # Set NaN values to be gray.
+        mainax.imshow(data, cmap=cmap, aspect='auto') # Auto scales the pixels according to the axes. 
+        # Set the axes ticks. 
+        mainax.set_xticks(np.arange(0, len(xlabels))) 
+        mainax.set_yticks(np.arange(0, len(ylabels))) 
+        # Set the axes labels, with the correct orientation and font size.
+        mainax.set_yticklabels(ylabels, fontdict={'fontsize':20})
+        xlabels = mainax.set_xticklabels(xlabels, fontdict={'fontsize':20})
         for label in xlabels: # Make x-axis labels vertical.
             label.set_rotation('vertical')
-        axes.set_yticklabels(yaxis)
-
-        axes.set_title(f'Expression in {subplot}')
-
-        # Add a colorbar.
-        mappable = mpl.cm.ScalarMappable(cmap=plt.get_cmap(color))
-        cbar = plt.colorbar(mappable, ax=axes, ticks=[0, 0.5, 1])
-        
-        cbar.ax.set_title('L1 norm')
-        cbar.ax.set_yticklabels(['-2', '0', '2'])
+        # If dendrograms are plotted, move the y-tick labels to make room for the dendrograms.
+        if self.cluster and plot_dendrograms: 
+            mainax.yaxis.set_label_position('right')
+            mainax.yaxis.tick_right() 
+       
+        # Add a colorbar to the colorbar axes.
+        mappable = mpl.cm.ScalarMappable(cmap=cmap) # Turn the selected colormap into a ScalarMappable object.
+        cbar = plt.colorbar(mappable, cax=cax, ticks=[0, 0.5, 1])
+        cbar.ax.set_title('L1 norm', fontdict={'fontsize':20})
+        cbar.ax.set_yticklabels(['-2', '0', '2'], fontdict={'fontsize':20})
 
     # Public methods --------------------------------------------------
 
@@ -325,4 +411,5 @@ def get_sorter(clusteridxs):
     sorter = [idx for (_, idx) in sorted(zip(clusteridxs, idxs))]
     
     return sorter
+
 

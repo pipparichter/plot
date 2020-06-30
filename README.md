@@ -19,7 +19,7 @@ avoiding the computationally-intensive process of producing a visual.
 ## Derived classes
 
 1. [**BarPlot**](./docs/barplot.md)
-2. [**HeatmapPlot**](./docs/barplot.md)
+2. [**HeatmapPlot**](./docs/heatmap.md)
 3. [**ScatterPlot**](./docs/scatterplot.md)
 
 ## Coming soon...

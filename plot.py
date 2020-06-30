@@ -101,7 +101,7 @@ class Plot():
         '''
         assert self.plotted, 'A figure has not yet been created. The plot() method must be called.'
         
-        for i in range(1, len(self.filepath)): # Make all necessary directories.
+        for i in range(1, len(self.filepath) + 1): # Make all necessary directories.
             filepath = os.path.join(*self.filepath[:i])
             PA.mkdir(filepath)
         
