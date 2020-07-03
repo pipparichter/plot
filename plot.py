@@ -1,4 +1,3 @@
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -17,7 +16,7 @@ import popalign as PA
 
 class Plot():
     # Class constructor.
-    def __init__(self, pop, nplots):
+    def __init__(self, pop, is_subplot=False, filename=None):
         '''
         Initializes a Plot object.
 
@@ -32,39 +31,38 @@ class Plot():
             grid. If grid=False, nplots must be None.
         '''
         self.filepath = [pop['output'], 'plots'] # Initialize a filepath.
-        self.filename = None
+        self.filename = filename
         
+        self.figure, self.axes = None, None
+        self.is_subplot = is_subplot
+
         self.pop = pop # Store the pop object.
         
-        self.nplots = nplots
-        self.figure, self.axes = None, None # these attributes will store the figure and axes objects.
-        self.nrows, self.ncols = PA.nr_nc(nplots)
-                
         # Gets the names of all the control samples in the pop object.
         self.ctrls = [s for s in pop['samples'].keys() if re.match(pop['controlstring'], s) is not None]
 
         self.plotted = False # Once self.plot() has been called once, this becomes True.
-        
+        self.plotter = None # The plotting function, which will be initialized in a derived class initializer.
+
         self.data = None # This will store the data for the Plot; format varies by subclass.
 
     # Private methods ----------------------------------------------------------------
     
     # NOTE: Removing this subprocess from __init__() reduces the computational cost of creating 
     # Plots (useful when creating BarPlots for use in a HeatmapPlot). 
-    def __init_figure(self):
+    def __init_figure(self, axes):
         '''
         Initializes the backing figure and axes. This function is called only when the graph needs
         to be displayed.
         '''
-        if self.nplots > 1:
-            self.figure, self.axes = plt.subplots(nrows=self.nrows, ncols=self.ncols, 
-                    sharex=True, sharey=True, figsize=(30, 30))
-            self.axes = self.axes.flatten().tolist()
-        elif self.nplots == 1:
+        if self.is_subplot:
+            self.axes = axes
+            self.figure = axes.get_figure # Get the figure associated with the inputted axes.
+        else:
             self.figure = plt.figure(figsize=(20, 20))
-            self.axes = [plt.axes([0, 0, 1, 1])] # Creates a list of axes with length of one.
-        
-    def _plot(self, plotter, color):
+            self.axes = self.figure.add_axes([0, 0, 1, 1])
+
+    def plot(self, color=None, fontsize=20, axes=None):
         '''
         Graphs the Plot object on the axes.
 
@@ -76,16 +74,14 @@ class Plot():
             The color data for the plotter function. The format of this data varies by subclass.
         '''
         assert self.data is not None, 'Data has not been initialized.'
+        assert not self.plotted, 'The Plot object has already been plotted.'
         
-        if self.plotted: # If plot() has been called before, clear the existing figure.
-            self.figure.clear()
-        self.__init_figure() # Initialize the figure and axes.
+        self.__init_figure(axes=axes)
 
-        for i in range(self.nplots):
-            plotter(self.axes[i], i, color)
-            # self.axes[i] = self.__barplot(ax, sample, color1, color2)
-        
-        self.figure.tight_layout() # Make sure axes aren't cut off.
+        if color is None: # If color is not specified, use the default color. 
+            color = self.color
+
+        self.plotter(self.axes, color=color, fontsize=fontsize)
         self.plotted = True
 
     # Public methods ----------------------------------------------------------------
@@ -100,6 +96,7 @@ class Plot():
             The name under which to save the plot. If None, the default filename (self.filename) is used.
         '''
         assert self.plotted, 'A figure has not yet been created. The plot() method must be called.'
+        assert not self.is_subplot, 'A subplot cannot be saved directly.'
         
         for i in range(1, len(self.filepath) + 1): # Make all necessary directories.
             filepath = os.path.join(*self.filepath[:i])
@@ -116,82 +113,32 @@ class Plot():
         print(f'Plot object saved to {loc}.')
    
 
-# Functions for verifying and initializing attributes ---------------------------------------------------
+# Accessory functions ---------------------------------------------------
 
-def _init_samples(pop, samples):
+def get_ncells(pop, sample=None, celltype=None):
     '''
-    Generates a list of samples for use in a Plot subclass.
-    
-    Parameters
-    ----------
-    pop : dict
-        The pop object.
-    samples : str, list
-        The sample or list of samples to be analyzed. If None, all samples in the pop
-        object are analyzed.
-    '''
-    if samples is None: # By default, make a plot for every sample.
-        samples = list(pop['samples'].keys())
-    elif isinstance(samples, str): # If only a single sample is given, put it into a list.
-        samples = [samples]
-    
-    samples = [s for s in samples if re.match(pop['controlstring'], s) is None]  # Filter out controls.
-    
-    for sample in samples: # Make sure all samples are valid.
-        assert sample in list(pop['samples'].keys()), f'Sample name {sample} is invalid'
-
-    return samples
-
-
-def _init_celltypes(pop, celltypes):
-    '''
-    Generates a list of samples for use in a Plot subclass.
-    
-    Parameters
-    ----------
-    pop : dict
-        The pop object.
-    celltypes : str, list
-        The celltype or list of celltypes to be analyzed. If None, all samples in the pop
-        object are analyzed.
-    '''
-    if celltypes is None: # By default, make a plot for every celltype.
-        celltypes = list(set(pop['gmm_types'])) # Remove duplicates from gmm_types list.
-    elif isinstance(celltypes, str): # If only a single sample is given, put it into a list.
-        celltypes = [celltypes]
-    
-    for celltype in celltypes: # Make sure all samples are valid.
-        assert celltype in pop['gmm_types'], f'Cell type {celltype} is invalid'
-
-    return celltypes
-
-
-def _init_genedict(pop, genes):
-    '''
-    Filters out all invalid gene names (i.e. genes not in pop['filtered_genes'], and returns the filtered list.
-    It also prints out all genes that were removed.
+    Returns the number of cells in the specified sample of the specified celltype.
 
     Parameters
     ----------
-    pop : dict
-        The pop object.
-    genes : list
-        The list of genes to filter.
+    sample : str
+        The sample for which to retrieve the number of cells. If None, all samples are used.
+    celltype : str
+        The celltype for which to retrieve the number of cells. If None, all celltypes are used.
     '''
-    genedict = {}
-    invalid = []
-    for gene in genes: # Filter out invalid gene names.
-        if gene not in pop['filtered_genes']:
-            invalid.append(gene)
-        else: # If the gene is valid, get its index.
-            # NOTE: pop['filtered_genes'] is a list, not a np.array.
-            genedict[gene] = pop['filtered_genes'].index(gene)
+    if sample is None:
+        if celltype is None:
+            ncells = pop['ncells']
+        else:
+            ncells = 0
+            for s in pop['samples'].keys():
+                ncells += np.count_nonzero(pop['samples'][s]['cell_type'] == celltype)
+    else:
+        if celltype is None:
+            ncells = len(pop['samples'][sample]['cell_type'])
+        else:
+            ncells = np.count_nonzero(pop['samples'][sample]['cell_type'] == celltype)
 
-    if len(invalid) > 0: # If any genes were removed, print the result
-        print('The following gene names are invalid, and were removed: ' + ', '.join(invalid))    
-     
-    return genedict
+    return ncells
 
 
-def _init_subpops(pop, samples=None, refpops=None):
-    pass
