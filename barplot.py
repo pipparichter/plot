@@ -4,14 +4,13 @@ from matplotlib import colors
 from plotpop import plot
 
 class BarPlot(plot.Plot):
-    # Class constructor.
+    '''
+    '''
     def __init__(self, pop,
-                 gene=None,
-                 celltype=None,
-                 sample=None,
+                 type_=None,
                  nbins=25,
-                 merge_samples=False,
-                 is_subplot=False):
+                 is_subplot=False, 
+                 **kwargs):
         '''
         Initializes the BarPlot object.
 
@@ -19,54 +18,54 @@ class BarPlot(plot.Plot):
         ----------
         pop : dict
             The pop object.
-        gene : str
-            The official name of the gene being analyzed.
-        samples : str, list
-            The sample or list of samples to be analyzed. If None, all samples in the pop
-            object are analyzed.
-        celltype : str
-            The cell type to be plotted.
+        type_ : str
+            The type of BarPlot to be graphed.
         nbins : int
             The number of bins into which to sort the data. Default is 25.
-        merge_reps : bool
-            Whether or not to merge the data for replicate samples.
+        is_subplot : bool
+            Whether or not the plot is a subplot.
         '''
-        self.merge_samples = merge_samples
-
-        # NOTE: init_samples is not called in the Plot initializer because Plot needs to be initialized with
-        # the number of plots. This is the simplest solution I could think of.
-        self.sample = sample
-        self.gene = gene
-        self.geneidx = pop['filtered_genes'].index(gene)
-        self.celltype = celltype
-        assert celltype in pop['gmm_types'], 'Invalid cell type.'  # Make sure the cell type name is valid.
+        self.merge_samples = kwargs.get('merge_samples', True)
        
-        super().__init__(pop, is_subplot=is_subplot) # Call the parent class initializer.
-        
-        # Set the plotting function and default colors.
-        self.plotter = self._plotter
-        self.color = ('lightsalmon', 'turquoise')
-        
-        # Adjust the filepath.
-        self.filepath.append('barplots')
-        self.filename = f'barplot.png'
-      
         # NOTE: len(self.bins) is one greater than the data arrays.
         self.bins = None # This will store the bin values.
         self.nbins = nbins
         self.binmax = 0.0 # This will be the max bin value.
 
+        # Parent class inititalization ------------------------------------------------------      
+        super().__init__(pop, is_subplot=is_subplot)
+        # Set the plotting function and default colors.
+        self.plotter = self._plotter
+        self.color = ('lightsalmon', 'turquoise')
+        
+        # Type-specific initialization ------------------------------------------------------
+        options = ['g_s', 'ct_s']
+        assert type_ in options, f'The type_ parameter must be one of: {options}.'
+        self.type_ = type_
+
+        if type_ == 'g_s':
+            celltype = kwargs.get('celltype', None)
+            gene = kwargs.get('gene', None)
+            sample = kwargs.get('sample', None)
+            self.celltype = plot.check_celltype(pop, celltype)
+            self.gene = plot.check_gene(pop, gene)
+            self.sample = plot.check_sample(pop, sample)
+            self.geneidx = pop['filtered_genes'].index(self.gene)
+            self.data = self.__g_s_get_data() 
+
+        # Adjust the filepath -------------------------------------------------------------------
+        self.filepath.append('barplots')
+        self.filename = f'barplot.png'
         # Populate the data and bin attributes. Note that self.data is already defined as an attribute in
         # the parent class. 
-        self.data = self.__get_data() 
 
-    # Private methods --------------------------------------------------------------------
+    # G_S --------------------------------------------------------------------
 
-    def __get_data(self):
+    def __g_s_get_data(self):
         '''
         Initializes the data and bin attributes with data from the pop object.
         '''
-        self.__binmax() # Get the max bin value and store it in the binmax attribute.
+        self.__g_s_binmax() # Get the max bin value and store it in the binmax attribute.
        
         ctrl_data, ctrl_ncells = np.zeros(self.nbins), 0
         for ctrl in self.ctrls:
@@ -124,7 +123,7 @@ class BarPlot(plot.Plot):
         # in order to support merge_reps without duplicating too much code.
         return data, ncells 
 
-    def __binmax(self):
+    def __g_s_binmax(self):
         '''
         Gets the maximum gene expression value across all samples for a particular gene
         and celltype (namely self.gene and self.celltype).
@@ -138,11 +137,16 @@ class BarPlot(plot.Plot):
             unfiltered = self.pop['samples'][sample]['M_norm'].toarray()[self.geneidx] # Get gene data for a sample.
             filtered = unfiltered[cellidxs] # Filter by celltype.
             
+            if len(filtered) == 0:
+                # NOTE: In one instance, I ran into a problem where one of the samples was empty (I verified this with
+                # pop['samples'][the empty samples]. For whatever reason, the metadata wasn't totally aligned with the
+                # actual data, so this addressed that problem.   
+                filtered = np.zeros(1)
             samplemax = filtered.max()
             if samplemax > binmax:
                 binmax = samplemax
         
-        self.binmax = binmax # Set the max_exp attribute.
+        self.binmax = binmax # Set the binmax attribute.
 
     def _plotter(self, axes, color=None, fontsize=None):
         '''
@@ -154,8 +158,6 @@ class BarPlot(plot.Plot):
         ----------
         axes : matplotlib.axes.Axes
             The axes on which to add the barplot. If None, new axes are created.
-        index : str
-            The index of the sample to be plotted.
         color : tuple
             Colors of the control and experimental data bars, respectively. See 
             matplotlib.colors module documentation for information on possible colors. 
@@ -206,8 +208,6 @@ class BarPlot(plot.Plot):
         if ref is None:
             refdata = self.ctrl_data
         else: # If no reference BarPlot is specified, use the control data. 
-            assert ref.bins == self.bins and self.celltype == ref.celltype and self.gene == ref.gene, \
-                    'Reference BarPlot is not compatible.'
             refdata = ref.data
         
         l1 = np.linalg.norm(testdata - refdata, ord=1)
