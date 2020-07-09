@@ -4,6 +4,10 @@ import numpy as np
 import sklearn as skl
 import time
 import scipy.cluster.hierarchy as sch
+import multiprocessing
+import os
+import re
+import scipy.stats
 
 import sys
 sys.path.insert(0, './popalign/popalign')
@@ -59,7 +63,7 @@ class HeatmapPlot(plot.Plot):
         self.lms = [None, None] # A list which will store the linkage matrices.
         
         # Type-specific initialization ------------------------------------------------------
-        options = ['s_ct', 'sp_s', 'sp_rp']
+        options = ['s_ct', 'sp', 'sp_rp']
         assert type_ in options, f'The type_ parameter must be one of: {options}.'
         self.type_ = type_
 
@@ -71,9 +75,16 @@ class HeatmapPlot(plot.Plot):
             self.xlabels, self.ylabels = plot.check_genes(pop, genes), plot.check_samples(pop, samples)
             self.data = self.__s_ct_get_data() # Populate the data attribute.
                 
-        elif type_ == 'sp_s':
-            pass
-        
+        elif type_ == 'sp':
+            self.xlabels, self.ylabels = None, None # These attributes will be populated by get_data.
+            self.ref = pop['ref'] # Store the name of the reference sample.
+            self.allgenes = np.array(pop['filtered_genes']) # Initialize an ordered list of genes.  
+            self.samples = plot.check_samples(self.pop, 
+                                              samples=self.pop['order'], 
+                                              filter_ctrls=True, 
+                                              filter_reps=self.merge_samples)
+            self.data = self.__sp_get_data()
+
         elif type_ == 'sp_rp':
             pass
         
@@ -100,7 +111,7 @@ class HeatmapPlot(plot.Plot):
         ngenes, nsamples = len(genes), len(samples)
 
         t0 = time.time() # Get the start time for performance info.
-        print(f'Gathering {celltype} data...\r', end='')
+        print(f'Gathering {celltype} data...    \r', end='')
         
         nans = [] # List to store the indices to be poplulated with NaNs.
         # Initialize a 2-D array, where there is a row for each sample and a column for each gene.
@@ -108,32 +119,28 @@ class HeatmapPlot(plot.Plot):
         for i in range(nsamples):
             sample = samples[i]
             rep = sample + '_rep'
+
+            mincells = 50 # The minimum number of cells needed to make a valid distribution
+            ncells = plot.get_ncells(self.pop, sample=sample, celltype=celltype)
+            if self.merge_samples: 
+                ncells += plot.get_ncells(self.pop, sample=rep, celltype=celltype)
+            if ncells < mincells:
+                nans.append(i)
             
             for j in range(ngenes):
                 gene = genes[j]
-                # ncells = self.pop['samples'][sample]['cell_type'].count(celltype)
-                ncells = np.count_nonzero(self.pop['samples'][sample]['cell_type'] == celltype)
 
-                if self.merge_samples: 
-                    # ncells += self.pop['samples'][rep]['cell_type'].count(celltype)
-                    ncells += np.count_nonzero(self.pop['samples'][rep]['cell_type'] == celltype)
-                    params = {'gene':gene, 'celltype':celltype, 'sample':sample, 'merge_samples':True}
-                    distribution = barplot.BarPlot(self.pop, type_='g_s', **params)
-                else:
-                    distribution = barplot.BarPlot(self.pop, gene=gene, celltype=celltype, sample=sample, merge_samples=False)
-                mincells = 50 # The minimum number of cells needed to make a valid distribution
-                if ncells < mincells:
-                    nans.append((i, j))
-                    
+                params = {'gene':gene, 'celltype':celltype, 'sample':sample, 'merge_samples':self.merge_samples}
+                distribution = barplot.BarPlot(self.pop, type_='g_s_ct', **params)    
                 l1 = distribution.calculate_l1() # Get the L1 metric for the distribution (reference is control by default).
                 data[i, j] = l1
         
         t1 = time.time()
-        print(f'{celltype} data gathered: {t1 - t0} seconds')
+        print(f'{celltype} data gathered: {t1 - t0} seconds    ')
 
         if self.cluster: # If clustering is set to True...
             t0 = time.time()
-            print(f'Clustering {celltype} data...\r', end='')
+            print(f'Clustering {celltype} data...    \r', end='')
             
             if self.cluster_axis == 'x':
                 data, genes = self.__cluster(data, axis='x')
@@ -147,58 +154,125 @@ class HeatmapPlot(plot.Plot):
             self.ylabels = samples
 
             t1 = time.time()
-            print(f'{celltype} data clustered: {t1 - t0} seconds')
+            print(f'{celltype} data clustered: {t1 - t0} seconds    ')
 
         # For the datapoints corresponding to distributions with ncells < mincells, replace the current value with NaN.
-        for i, j in nans:
-            data[i, j] = np.nan
+        for i in nans:
+            ngenes = len(genes)
+            data[i, :] = np.array([np.nan] * ngenes)
 
         return data
 
-    # SP_S -------------------------------------------------------------------------------------------------------
+    # SP -------------------------------------------------------------------------------------------------------
 
-    def __sp_s_get_data(self, sample): # IN PROGRESS
+    def __sp_get_data(self): # IN PROGRESS
         '''
-        This function gets the data for a gene-by-subpopulation heatmap, for the subplot corresponding to the
-        inputted sample.
+        This function gets the data for a gene-by-subpopulation heatmap, for all subpopulations across the entire 
+        experiment.
+        '''
+        ngenes = len(self.allgenes)
+        xlabels, data = np.array([]), np.empty((0, ngenes))
+        
+        gmmtypes = self.pop['samples'][self.ref]['gmm_types']
+        for refpop in range(len(gmmtypes)):
+            celltype = gmmtypes[refpop]
+            print(f'Calculating cutoff for {celltype}...    \r', end='')
+            cutoff = self.__diffexp_get_cutoff(self.pop) # Get the L1 cutoff from controls.
+            print(f'Cutoff for {celltype} is {cutoff}.    ')
+
+            t0 = time.time()
+            for sample in self.samples:
+                print(f'Gathering data for sample {sample}...    \r', end='')
+
+                l1s, upreg, downreg = self.__diffexp_get_sample(refpop=refpop, sample=sample, cutoff=cutoff)
+                    
+                xlabels = np.append(np.append(xlabels, upreg), downreg)
+                _, order = np.unique(xlabels, return_index=True)
+                xlabels = xlabels[np.sort(order)]
+
+                data = np.append(data, l1s)
+
+            t1 = time.time()
+            print(f'Sample data gathered: {t1 - t0} seconds    ')
+
+        # Filter L1 data by xlabels.
+        geneidxs = np.array([self.genedict[x] for x in np.nditer(xlabels)])
+        data = data[:, geneidxs]
+        self.xlabels = xlabels # All differentially expressed genes. 
+        
+        return data    
+    
+    # Unsupervised gene selection -------------------------------------------------------------------------------
+
+    def __diffexp_get_sample(self, refpop=None, sample=None, cutoff=0.5):
+        '''
+        Calculates the L1 norm for each gene. The vectors used to calculate the L1 norm contain the expression data
+        of that gene across each cell in a subpopulation (refpop and the aligned subpopulation in the specified sample).
+        It returns an numpy array of norms, one for each gene in pop['filtered_genes'], as well as which genes were
+        highly up-or-down regulated; these genes are determined by the cutoff. 
 
         Parameters
         ----------
+        refpop : int
+            The index of the subpopulation in the reference sample. This is used to identify the 
+            aligned subpopulations in the inputted sample.
         sample : str
-            The sample for which the data is being gathered. If 'allsamples', then the overarching GMM is used.
-        index : int
-            The index corresponding to the subplot for which the data is being gathered. 
+            The name of the sample being compared to the reference sample.
+        cutoff : float
+            The L1 norm cutoff which determines whether or not a gene is differentially expressed. If the
+            cutoff is 0.5, then only genes with an L1 value above 0.5 or below -0.5 are returned. 
+        merge_samples : bool
+            Whether or not the samples are being merged.
         '''
-        # Make sure feature data has been initialized, which is done in the onmf() function. 
-        assert 'C' in self.pop['samples'][sample].keys(), 'Feature data has not been initialized.'
+        # NOTE: arr is a three-by-three array. I'm guessing the second column contains the indices of the
+        # reference subpopulation to which the subpopulation in the first column aligns. 
+        alignments = self.pop['samples'][sample]['alignments'] # Get the alignments for the specified sample.
+        testpop = np.where(alignments[:, 1] == refpop) # Get the index of the sample population aligned to refpop.
+        assert len(testpop) > 0, f'No alignments were found for {sample}.'
 
-        genes = self.xlabels[sample].tolist()
-        geneidxs = [self.genedict[gene] for gene in genes]
-
-        if sample == 'allsamples':
-            gmm, gmmtypes= self.pop['gmm'], self.pop['gmm_types']
-            M = PA.cat_data(self.pop, 'M_norm')
-            C = PA.cat_data(self.pop, 'C')
-            gmmtypes = self.pop['gmm_types']
-        else:
-            gmm, gmmtypes = self.pop['samples'][sample]['gmm'], self.pop['samples'][sample]['gmm_types']
-            M = self.pop['samples'][sample]['M_norm']
-            C = self.pop['samples'][sample]['C']
+        l1s = np.array([])
+        for gene in self.allgenes:
+            testbar = barplot.BarPlot(self.pop, 
+                                      type_='g_s_rp', 
+                                      refpop=refpop, 
+                                      sample=sample, 
+                                      merge_samples=self.merge_samples,
+                                      init_controls=False,
+                                      gene=gene)
+            refbar = barplot.BarPlot(self.pop, 
+                                     type_='g_s_rp', 
+                                     refpop=refpop, 
+                                     sample=self.ref, 
+                                     merge_samples=False,
+                                     init_controls=False,
+                                     gene=gene)
+            l1s = np.append(l1s, barplot.calculate_l1(testbar, ref=refbar)) 
         
-        M = M[geneidxs, :]
-        prediction = gmm.predict(C) # Get subpopulation assignments from the selected GMM.
+        # pool = multiprocessing.pool.Pool(os.cpu_count()) # Inititialize multiprocessing object.
+        # l1s = pool.starmap(barplot.calculate_l1, [(testbars[i], refbars[i]) for i in range(ngenes)])
+        # NOTE: starmap() is just like map, but it passes the elements in the iterable as individual arguments
+        # rather than as a single argument (i.e. func(*args) rather than func(args))
+
+        upidxs = np.where(np.array(l1s) > cutoff)
+        downidxs = np.where(np.array(l1s) < -1 * cutoff)
         
-        ncells = [] # Empty list to store number of cells per subpopulation.
-        for i in range(gmm.n_components): # For each subpopulation in the GMM...
-            cellidxs = np.where(prediction == i) # Get the indices of the cells in the ith subpopulation.
-
-    # SP_RP -------------------------------------------------------------------------------------------
-
-    def __sp_rp_get_data(self, refpop): # IN PROGRESS
+        return np.array(l1s), self.allgenes[upidxs], self.allgenes[downidxs]
+ 
+    def __diffexp_get_cutoff(self, refpop=None, tail=0.01):
         '''
         '''
-        pass
+        ctrls = [ctrl for ctrl in self.ctrls if ctrl != self.ref] # Get a list of controls that are not the ref sample.
+        
+        ctrl_l1s = np.array([])
+        for ctrl in ctrls:
+            # Turn off merge_samples when evaluating the controls. 
+            l1s, upreg, downreg = self.__diffexp_get_sample(refpop=refpop, sample=ctrl)
+            ctrl_l1s = np.append(ctrl_l1s, l1s)
+        
+        distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
+        return distribution.ppf(tail)
 
+  
     # ---------------------------------------------------------------------------------------------------
 
     def __cluster(self, data, axis=None):
@@ -330,7 +404,7 @@ class HeatmapPlot(plot.Plot):
         # Plot the heatmap on the main axes.
         cmap = plt.get_cmap(color) # Get the colormap.
         cmap.set_bad(color='gray') # Set NaN values to be gray.
-        mainax.imshow(data, cmap=cmap, aspect='auto') # Auto scales the pixels according to the axes. 
+        mainax.imshow(data, cmap=cmap, aspect='auto', vmin=-2.0, vmax=2.0) 
         # Set the axes ticks. 
         mainax.set_xticks(np.arange(0, len(xlabels))) 
         mainax.set_yticks(np.arange(0, len(ylabels))) 
@@ -345,8 +419,9 @@ class HeatmapPlot(plot.Plot):
             mainax.yaxis.tick_right() 
        
         # Add a colorbar to the colorbar axes.
-        mappable = mpl.cm.ScalarMappable(cmap=cmap) # Turn the selected colormap into a ScalarMappable object.
-        cbar = plt.colorbar(mappable, cax=cax, ticks=[0, 0.5, 1])
+        norm = mpl.colors.Normalize(vmin=-2.0, vmax=2.0)
+        mappable = mpl.cm.ScalarMappable(norm=norm, cmap=cmap) # Turn the selected colormap into a ScalarMappable object.
+        cbar = plt.colorbar(mappable, cax=cax, ticks=[-2, 0, 2])
         cbar.ax.set_title('L1 norm', fontdict={'fontsize':fontsize})
         cbar.ax.set_yticklabels(['-2', '0', '2'], fontdict={'fontsize':fontsize})
 
@@ -372,4 +447,85 @@ def get_sorter(model, X=None):
     sorter = [idx for (_, idx) in sorted(zip(clusteridxs, idxs))]
     
     return sorter
+
+
+# def diffexp_get_cutoff(pop, refpop=None, tail=0.2):
+#     '''
+#     '''
+#     ref = pop['ref']
+#     # Get all controls that are not the ref sample.
+#     ctrls = [s for s in pop['samples'].keys() if re.match(pop['controlstring'], s) is not None and s != ref]
+#     
+#     ctrl_l1s = np.array([])
+#     for ctrl in ctrls:
+#         # Turn off merge_samples when evaluating the controls. 
+#         l1s, upreg, downreg = diffexp_get_sample(pop, refpop=refpop, sample=ctrl, merge_samples=False)
+#         ctrl_l1s = np.append(ctrl_l1s, l1s)
+#     
+#     distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
+#     return distribution.ppf(tail)
+# 
+# 
+# def diffexp_get_sample(pop, refpop=None, sample=None, cutoff=0.5, merge_samples=True):
+#     '''
+#     Calculates the L1 norm for each gene. The vectors used to calculate the L1 norm contain the expression data
+#     of that gene across each cell in a subpopulation (refpop and the aligned subpopulation in the specified sample).
+#     It returns an numpy array of norms, one for each gene in pop['filtered_genes'], as well as which genes were
+#     highly up-or-down regulated; these genes are determined by the cutoff. 
+# 
+#     Parameters
+#     ----------
+#     refpop : int
+#         The index of the subpopulation in the reference sample. This is used to identify the 
+#         aligned subpopulations in the inputted sample.
+#     sample : str
+#         The name of the sample being compared to the reference sample.
+#     cutoff : float
+#         The L1 norm cutoff which determines whether or not a gene is differentially expressed. If the
+#         cutoff is 0.5, then only genes with an L1 value above 0.5 or below -0.5 are returned. 
+#     merge_samples : bool
+#         Whether or not the samples are being merged.
+#     '''
+#     # NOTE: The reference sample is one of the controls.
+#     assert sample in pop['samples'].keys(), 'Sample name is invalid.'
+#     ref = pop['ref']
+#     
+#     # NOTE: arr is a three-by-three array. I'm guessing the second column contains the indices of the
+#     # reference subpopulation to which the subpopulation in the first column aligns. 
+#     alignments = pop['samples'][sample]['alignments'] # Get the alignments for the specified sample.
+#     testpop = np.where(alignments[:, 1] == refpop) # Get the index of the sample population aligned to refpop.
+#     assert len(testpop) > 0, f'No alignments were found for {sample}.'
+# 
+#     l1s = np.array([])
+#     for gene in pop['filtered_genes']:
+#         testbar = barplot.BarPlot(pop, 
+#                                   type_='g_s_rp', 
+#                                   refpop=refpop, 
+#                                   sample=sample, 
+#                                   merge_samples=merge_samples,
+#                                   init_controls=False,
+#                                   gene=gene)
+#         refbar = barplot.BarPlot(pop, 
+#                                  type_='g_s_rp', 
+#                                  refpop=refpop, 
+#                                  sample=ref, 
+#                                  merge_samples=False,
+#                                  init_controls=False,
+#                                  gene=gene)
+#         l1s = np.append(l1s, barplot.calculate_l1(testbar, ref=refbar)) 
+#     
+#     # pool = multiprocessing.pool.Pool(os.cpu_count()) # Inititialize multiprocessing object.
+#     # l1s = pool.starmap(barplot.calculate_l1, [(testbars[i], refbars[i]) for i in range(ngenes)])
+#     # NOTE: starmap() is just like map, but it passes the elements in the iterable as individual arguments
+#     # rather than as a single argument (i.e. func(*args) rather than func(args))
+# 
+#     genes = np.array(pop['filtered_genes'])
+#     upidxs = np.where(np.array(l1s) > cutoff)
+#     downidxs = np.where(np.array(l1s) < -1 * cutoff)
+#     print(l1s)    
+#     return np.array(l1s), genes[upidxs], genes[downidxs]
+
+
+
+
 

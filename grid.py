@@ -21,7 +21,7 @@ class Grid(Plot):
         params : dict
             The parameters which will be passed into the Plot subclass inititializer
             as keyword arguments.
-        var : tupe
+        var : tuple
             A two-tuple where the first element is a string representing the name of the parameter which varies by 
             subplot, and the second element is a list containing the values the parameter takes on. For example, 
             params=('celltype', ['Myeloid', 'T cell'])

@@ -190,7 +190,7 @@ def check_sample(pop, sample):
     '''
     '''
     assert sample is not None, 'A sample name must be specified.'
-    assert sample in pop['samples'].keys(), f'{sample} is an invalid sampe name.'
+    assert sample in pop['samples'].keys(), f'{sample} is an invalid sample name.'
 
     return sample
 
