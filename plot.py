@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import re
+import scipy
+import barplot
 
 import sys
 sys.path.insert(0, './popalign/popalign')
@@ -171,6 +173,13 @@ def check_gene(pop, gene):
 
 def check_genes(pop, genes):
     '''
+    Checks a list of genes to make sure all are valid, and returns a numpy array of valid genes.
+    Invalid genes are removed and printed.
+
+    Parameters
+    ----------
+    genes : list
+        A list of genes to check.
     '''
     assert genes is not None, 'A gene list must be specified.'
     invalid = []
@@ -198,6 +207,7 @@ def check_sample(pop, sample):
 def check_samples(pop, samples, filter_reps=True, filter_ctrls=True):
     '''
     '''
+    samples = list(samples) # Make sure samples is a list.
     assert samples is not None, 'A list of samples must be specified.'
     for sample in samples[:]:
         check_sample(pop, sample)
@@ -209,4 +219,47 @@ def check_samples(pop, samples, filter_reps=True, filter_ctrls=True):
     
     return np.array(samples)
         
+
+# Differentially expressed gene selection ------------------------------------------------------------
+
+def diffexp_(pop, merge_samples=True, tail=0.01):
+    '''
+
+    '''
+    celltypes = np.unique(pop['gmm_types']).tolist()
+    genes = pop['filtered_genes']
+    samples = check_samples(pop['order'], pop['order'], filter_ctrls=True, merge_reps=merge_samples)
+    ctrls = [s for s in pop['order'] if re.match(pop['controlstring'], s) is not None]
+    
+    diffexp = {}
+    diffexp['upreg'] = np.array([])
+    diffexp['downreg'] = np.array([])
+
+    print(f'Calculating cutoff...    \r', end='')
+    ctrl_l1s = np.array([])
+    for ctrl in ctrls:
+        # Turn off merge_samples when evaluating the controls. 
+        for celltype in celltypes:
+            for gene in genes:
+                params = {'gene':gene, 'sample':ctrl, 'merge_samples':False, 'celltype':celltype}
+                bar = barplot.BarPlot(pop, type_='g_s_ct', **params) 
+                l1 = bar.calculate_l1()
+                ctrl_l1s = np.append(ctrl_l1s, l1)
+    distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
+    cutoff = abs(distribution.ppf(tail)) # Sometimes this value is negative, so take the absolute value.
+    print(f'Cutoff is {cutoff}.    ')
+    
+    for sample in samples:
+        for celltype in celltypes: 
+            for gene in genes:
+                params = {'gene':gene, 'sample':sample, 'merge_samples':merge_samples, 'celltype':celltype}
+                bar = barplot.BarPlot(pop, type_='g_s_ct', **params) 
+                l1 = bar.calculate_l1()
+                
+                if l1 < -1 * cutoff:
+                    diffexp['downreg'] = np.append(diffexp['downreg'], gene)
+                elif l1 > cutoff:
+                    diffexp['upreg'] = np.append(diffexp['upreg'], gene)
+    return diffexp
+
 

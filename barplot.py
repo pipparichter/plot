@@ -27,11 +27,6 @@ class BarPlot(plot.Plot):
             Whether or not the plot is a subplot.
         '''
         self.merge_samples = kwargs.get('merge_samples', True)
-       
-        self.bins = None # This will store the bin values.
-        self.nbins = nbins
-        self.binmax = 0 # This will be the maximum bin value (i.e. bins[-1])
-        self.ncells = 0 # This will be the number of cells represented by the distribution.
 
         # Parent class inititalization ------------------------------------------------------      
         super().__init__(pop, is_subplot=is_subplot)
@@ -44,7 +39,7 @@ class BarPlot(plot.Plot):
         assert type_ in options, f'The type_ parameter must be one of: {options}.'
         self.type_ = type_
 
-        if type_ == 'g_s_ct':
+        if type_ == 'g_s_ct': # Distribution for a specific gene and sample, filtered by subtype.
             celltype = kwargs.get('celltype', None)
             gene = kwargs.get('gene', None)
             sample = kwargs.get('sample', None)
@@ -53,7 +48,7 @@ class BarPlot(plot.Plot):
             self.sample = plot.check_sample(pop, sample)
             self.geneidx = pop['filtered_genes'].index(self.gene)
 
-        elif type_ == 'g_s_rp':
+        elif type_ == 'g_s_rp': # Distribution for a specific gene and sample, filtered by reference population.
             refpop = kwargs.get('refpop', None)
             gene = kwargs.get('gene', None)
             sample = kwargs.get('sample', None)
@@ -61,7 +56,13 @@ class BarPlot(plot.Plot):
             self.gene = plot.check_gene(pop, gene)
             self.sample = plot.check_sample(pop, sample)
             self.geneidx = pop['filtered_genes'].index(self.gene)
-       
+              
+        self.bins = None # This will store the bin values.
+        self.nbins = nbins
+        self.binmax = 0 # This will be the maximum bin value (i.e. bins[-1])
+        self.ncells = 0 # This will be the number of cells represented by the distribution.
+        self.mean, self.ctrl_mean = 0, 0 # The means of the data and controls.
+
         # Populate the data, bin, and binmax attributes.
         self.init_ctrls = kwargs.get('init_ctrls', True)
         self.data = self.__g_s_get_data(init_ctrls=self.init_ctrls) 
@@ -70,7 +71,7 @@ class BarPlot(plot.Plot):
         self.filepath.append('barplots')
         self.filename = f'barplot.png'
 
-    # G_S --------------------------------------------------------------------
+    # G_S_* --------------------------------------------------------------------
 
     def __g_s_get_data(self, init_ctrls=True):
         '''
@@ -98,35 +99,35 @@ class BarPlot(plot.Plot):
             data[0] = 1.0
             self.bins = np.zeros(self.nbins + 1, dtype=float)
             self.ctrl_data = data
+            # NOTE: Because there is no expression, leave self.mean as the default 0.
     
             return data
  
-        ctrl_data, ctrl_ncells = np.zeros(self.nbins), 1 
+        ctrl_arr, ctrl_ncells = np.array([]), 1 
         if init_ctrls: # If the init_ctrls setting is True...    
             for ctrl in self.ctrls:
                 ctrl_idxs = idx_getter(ctrl) # Get the control data of the first control sample. 
-                arr = self.pop['samples'][ctrl]['M_norm'].toarray()[self.geneidx][ctrl_idxs]
-                d, _ = np.histogram(arr, bins=self.nbins, range=(0, binmax))
-                ctrl_data = np.add(ctrl_data, d)
-                ctrl_ncells += len(ctrl_idxs)    
+                ctrl_arr = np.append(ctrl_arr, self.pop['samples'][ctrl]['M_norm'].toarray()[self.geneidx][ctrl_idxs])
+                ctrl_ncells += len(ctrl_idxs)   
+
+        self.ctrl_mean = np.mean(ctrl_arr) # Store the mean as an attribute.
+        ctrl_data, _ = np.histogram(ctrl_arr, bins=self.nbins, range=(0, binmax))
         self.ctrl_data = ctrl_data / ctrl_ncells # Normalize the data by cell number.
         
         idxs = idx_getter(self.sample)
         ncells = len(idxs)
         arr = self.pop['samples'][self.sample]['M_norm'].toarray()[self.geneidx][idxs]
-        data, bins = np.histogram(arr, bins=self.nbins, range=(0, binmax))
-
         if self.merge_samples: # If merge_samples, combine the data from the *_rep sample.
             rep = self.sample + '_rep'
             rep_idxs = idx_getter(rep) 
-            arr = self.pop['samples'][rep]['M_norm'].toarray()[self.geneidx][rep_idxs]
-            rep_data, bins = np.histogram(arr, bins=self.nbins, range=(0, binmax))
-
+            arr = np.append(arr, self.pop['samples'][rep]['M_norm'].toarray()[self.geneidx][rep_idxs])
             ncells += len(rep_idxs) # Add the number of cells in the replicate sample to the total cell countself.
-            data = np.add(data, rep_data) # Normalize the data and add it to self.data.
         
+        self.mean = np.mean(arr) # Store the mean as an attribute.
+        data, bins = np.histogram(arr, bins=self.nbins, range=(0, binmax))
         self.bins = bins # Store the bins in the object.
         self.ncells = ncells # Store the number of cells represented by the BarPlot.
+        
         return data / ncells # Normalize the bin data and return.
     
     def __get_rp_idxs(self, sample):
@@ -148,6 +149,7 @@ class BarPlot(plot.Plot):
         assignments = self.pop['samples'][sample]['gmm'].predict(t)
         # Get the indices of the cells which belong to refpop and the aligned test subpopulation.
         subpopidxs = np.where(assignments == subpop)[0]
+        
         return subpopidxs
 
     def __get_ct_idxs(self, sample):
@@ -252,15 +254,18 @@ class BarPlot(plot.Plot):
             If None, the function uses the ctrl data.
         '''
         testdata = self.data
+        testmean = self.mean
         if ref is None: # If no reference BarPlot is specified, use the control data. 
             # Make sure the control data has been inititalized.
             assert self.init_ctrls is True, 'Controls have not been inititalized; a reference BarPlot must be given.'
             refdata = self.ctrl_data
+            refmean = self.ctrl_mean
         else: 
             refdata = ref.data
-
+            refmean = ref.mean
+        
         l1 = np.linalg.norm(testdata - refdata, ord=1) 
-        if testdata.mean() < refdata.mean():
+        if testmean < refmean:
             l1 *= -1 
         
         return l1
