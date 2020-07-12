@@ -3,8 +3,9 @@ import numpy as np
 import os
 import re
 import scipy
-import barplot
-
+import time 
+from plotpop import barplot
+import sklearn as skl
 import sys
 sys.path.insert(0, './popalign/popalign')
 import popalign as PA
@@ -29,11 +30,10 @@ class Plot():
         ----------
         pop : dict
             The pop object.
-        grid : bool
-            Whether or not the plot is a grid.
-        nplots : int
-            If the object is a grid, this specifies the number of plots in the 
-            grid. If grid=False, nplots must be None.
+        is_subplot : bool
+            Whether or not the plot is a subplot.
+        filename : str
+            The filename under which to save the Plot.
         '''
         self.filepath = [pop['output'], 'plots'] # Initialize a filepath.
         self.filename = filename
@@ -128,9 +128,9 @@ class Plot():
 
 # Accessory functions ---------------------------------------------------
 
-def get_ncells(pop, sample=None, celltype=None):
+def get_ncells(pop, sample=None, celltype=None, refpop=None):
     '''
-    Returns the number of cells in the specified sample of the specified celltype.
+    Returns the number of cells in the pop object.
 
     Parameters
     ----------
@@ -139,15 +139,33 @@ def get_ncells(pop, sample=None, celltype=None):
     celltype : str
         The celltype for which to retrieve the number of cells. If None, the total number of cells in 
         the sample is returned.
+    refpop : int
+        The index of the reference population for which to retrieve the number of cells.
     '''
-    assert sample is not None, 'A sample name must be specified.'
+    assert bool(celltype) ^ bool(refpop) or not (refpop or celltype), \
+            'Only one of celltype or refpop can be specified, not both.'
 
-    celltypes = np.array(pop['samples'][sample]['cell_type'])
-    
-    if celltype is None:
-        ncells = len(celltypes)
-    else:
-        ncells = np.count_nonzero(celltypes == celltype)
+    ncells = 0
+    if sample is None:
+        if celltype is None and refpop is None:
+            ncells = pop['ncells']
+        elif refpop is None:
+            for sample in pop['order']:
+                celltypes = np.array(pop['samples'][sample]['cell_type'])
+                ncells += np.count_nonzero(celltypes == celltype)
+        else: # If celltype is None...
+            print('CODE INCOMPLETE IN plot.get_ncells()')
+            pass
+
+    else: # If a sample is specified...
+        if celltype is None and refpop is None:
+            ncells = pop['samples'][sample]['M_norm'].shape[1]
+        elif refpop is None:
+            celltypes = np.array(pop['samples'][sample]['cell_type'])
+            ncells = np.count_nonzero(celltypes == celltype)
+        else: # If celltype is None...
+            print('CODE INCOMPLETE IN plot.get_ncells()')
+            pass
 
     return ncells
 
@@ -155,6 +173,14 @@ def get_ncells(pop, sample=None, celltype=None):
 
 def check_celltype(pop, celltype):
     '''
+    Checks to make sure the inputted celltype is valid. If the celltype is valid, it is returned.
+
+    Parameters
+    ----------
+    pop : dict
+        The PopAlign object.
+    celltype : str
+        A string representing a possible celltype (e.g. T cell, B-cell, Myeloid).
     '''
     assert celltype is not None, 'A cell type must be specified.'
     assert celltype in pop['gmm_types'], f'{celltype} is not a valid celltype.'
@@ -164,11 +190,37 @@ def check_celltype(pop, celltype):
 
 def check_gene(pop, gene):
     '''
+    Checks to make sure the inputted gene is valid. If the gene is valid, then it is returned.
+
+    Parameters
+    ----------
+    pop : dict
+        The PopAlign object.
+    gene : str
+        A string representing the gene name to be checked.        
     '''
     assert gene is not None, 'A gene name must be specified.'
     assert gene in pop['filtered_genes'], f'{gene} is an invalid gene name.'
     
     return gene
+
+
+def check_sample(pop, sample):
+    '''
+    Checks the inputted sample to make sure it's a valid sample name. If the sample is valid, it
+    is returned. 
+
+    Parameters
+    ----------
+    pop : dict
+        The PopAlign object.
+    sample : str
+        A string representing a possible sample name.
+    '''
+    assert sample is not None, 'A sample name must be specified.'
+    assert sample in pop['samples'].keys(), f'{sample} is an invalid sample name.'
+
+    return sample
 
 
 def check_genes(pop, genes):
@@ -178,6 +230,8 @@ def check_genes(pop, genes):
 
     Parameters
     ----------
+    pop : dict
+        The PopAlign object.
     genes : list
         A list of genes to check.
     '''
@@ -195,20 +249,25 @@ def check_genes(pop, genes):
     return np.array(genes)
 
 
-def check_sample(pop, sample):
-    '''
-    '''
-    assert sample is not None, 'A sample name must be specified.'
-    assert sample in pop['samples'].keys(), f'{sample} is an invalid sample name.'
-
-    return sample
-
-
 def check_samples(pop, samples, filter_reps=True, filter_ctrls=True):
     '''
+    Checks a list of samples of samples to make sure all are valid. If valid, returns
+    a numpy array containing the inputted sample names.
+
+    Parameters
+    ----------
+    pop : dict
+        The PopAlign object.
+    samples : list
+        A list of strings representing possible sample names.
+    filter_reps : bool
+        Whether or not to filter out replicate sample names (i.e. samples ending in '_rep'). 
+        True by default.
+    filter_ctrls : bool
+        Whether or not to filter out samples matching the controlstring (stored in pop['controlstring']). 
+        True by default.
     '''
     samples = list(samples) # Make sure samples is a list.
-    assert samples is not None, 'A list of samples must be specified.'
     for sample in samples[:]:
         check_sample(pop, sample)
 
@@ -222,44 +281,94 @@ def check_samples(pop, samples, filter_reps=True, filter_ctrls=True):
 
 # Differentially expressed gene selection ------------------------------------------------------------
 
-def diffexp_(pop, merge_samples=True, tail=0.01):
+def get_diffexp(pop, cluster=True, nclusters=3):
     '''
+    Returns a dictionary storing information on differentially expressed genes. It stores a list of the
+    up and down-regulated genes by sample, as well as an nsamples by ngenes 2-D array containing the
+    calculated L1 values. If cluster is True, it also stores a list of gene clusters (genes which behave
+    similarly across all samples). 
 
+    This function is designed to be used in conjunction with HeatmapPlots. 
+
+    Parameters
+    ----------
+    pop : dict
+        The PopAlign object.
+    cluster : bool
+        Whether or not to cluster the genes by expression.
+    nclusters : int
+        If cluster == True, this is the number of clusters into which the differentially-expressed
+        genes will be grouped.
     '''
-    celltypes = np.unique(pop['gmm_types']).tolist()
-    genes = pop['filtered_genes']
-    samples = check_samples(pop['order'], pop['order'], filter_ctrls=True, merge_reps=merge_samples)
+    genes = np.array(pop['filtered_genes'])
+    samples = check_samples(pop, pop['order'], filter_ctrls=True, filter_reps=True)
     ctrls = [s for s in pop['order'] if re.match(pop['controlstring'], s) is not None]
     
     diffexp = {}
-    diffexp['upreg'] = np.array([])
-    diffexp['downreg'] = np.array([])
+    diffexp['samples'] = {}
 
     print(f'Calculating cutoff...    \r', end='')
     ctrl_l1s = np.array([])
     for ctrl in ctrls:
         # Turn off merge_samples when evaluating the controls. 
-        for celltype in celltypes:
-            for gene in genes:
-                params = {'gene':gene, 'sample':ctrl, 'merge_samples':False, 'celltype':celltype}
-                bar = barplot.BarPlot(pop, type_='g_s_ct', **params) 
-                l1 = bar.calculate_l1()
-                ctrl_l1s = np.append(ctrl_l1s, l1)
+        for gene in genes:
+            params = {'gene':gene, 'sample':ctrl, 'merge_samples':False}
+            bar = barplot.BarPlot(pop, type_='g_s', **params) 
+            l1 = bar.calculate_l1()
+            ctrl_l1s = np.append(ctrl_l1s, l1)
     distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
-    cutoff = abs(distribution.ppf(tail)) # Sometimes this value is negative, so take the absolute value.
+    cutoff = abs(distribution.ppf(0.001)) # Sometimes this value is negative, so take the absolute value.
     print(f'Cutoff is {cutoff}.    ')
     
-    for sample in samples:
-        for celltype in celltypes: 
-            for gene in genes:
-                params = {'gene':gene, 'sample':sample, 'merge_samples':merge_samples, 'celltype':celltype}
-                bar = barplot.BarPlot(pop, type_='g_s_ct', **params) 
-                l1 = bar.calculate_l1()
-                
-                if l1 < -1 * cutoff:
-                    diffexp['downreg'] = np.append(diffexp['downreg'], gene)
-                elif l1 > cutoff:
-                    diffexp['upreg'] = np.append(diffexp['upreg'], gene)
-    return diffexp
+    t0 = time.time()
+    diff_genes = np.array([]) # A list to store all differentially-expressed genes.
+    all_l1s = np.zeros((len(samples), len(genes)))
+    for i in range(len(samples)):
+        print(f'Gathering data for sample {i} of {len(samples)}...    \r', end='')
+        sample = samples[i]
 
+        l1s = np.array([])
+        for gene in genes:
+            l1 = barplot.calculate_l1(pop, gene, sample)
+            l1s = np.append(l1s, l1)
+        all_l1s[i] = l1s
+
+        down = genes[np.where(l1s < -1 * cutoff)[0]]
+        up = genes[np.where(l1s > cutoff)[0]]
+        diffexp['samples'][sample] = {}
+        diffexp['samples'][sample]['up'] = up
+        diffexp['samples'][sample]['down'] = down
+        diff_genes = np.append()
+
+    t1 = time.time()
+    print(f'All sample data gathered: {int(t1 - t0)} seconds.    ')
+    diffexp['l1s'] = all_l1s # Store the calculated L1 values.
+    
+    # Remove duplicates from the list of differentially expressed genes, while preserving order. 
+    # NOTE: return_index=True makes np.unique return an array of indices which result in the unique array. 
+    diff_genes = np.unique(diff_genes) 
+    diffexp['all'] = diff_genes 
+    
+    if cluster:
+        t0 = time.time()
+        print('Clustering genes...    \r', end='')
+        diffexp['clusters'] = []
+    
+        geneidxs = np.array([np.where(genes == g)[0] for g in diff_genes])
+        diff_l1s = np.transpose(all_l1s)[geneidxs]
+
+        X = skl.metrics.pairwise_distances(X=diff_l1s, metric='euclidean') # Get the distance matrix.
+        model = skl.cluster.AgglomerativeClustering(n_clusters=nclusters,
+                                                    affinity='precomputed', # Distance matrix was precomputed.
+                                                    linkage='complete') # Create the clustering model.
+        clusters = model.fit_predict(X=X)
+        for i in range(nclusters):
+            clusteridxs = np.where(clusters == i)
+            diffexp['clusters'].append(diff_genes[clusteridxs])
+        t1 = time.time()
+        print(f'Genes clustered: {int(t1 - t0)} seconds.    ')
+
+    return diffexp
+      
+    
 

@@ -3,6 +3,7 @@ from matplotlib import colors
 import popalign as PA
 
 from plotpop import plot
+from plotpop.plot import get_ncells
 
 class BarPlot(plot.Plot):
     '''
@@ -35,28 +36,21 @@ class BarPlot(plot.Plot):
         self.color = ('lightsalmon', 'turquoise')
         
         # Type-specific initialization ------------------------------------------------------
-        options = ['g_s_ct', 'g_s_rp']
+        options = ['g_s_ct', 'g_s_rp', 'g_s']
         assert type_ in options, f'The type_ parameter must be one of: {options}.'
         self.type_ = type_
+        
+        self.gene = plot.check_gene(pop, kwargs.get('gene', None))
+        self.sample = plot.check_sample(pop, kwargs.get('sample', None))
+        self.geneidx = pop['filtered_genes'].index(self.gene)
 
-        if type_ == 'g_s_ct': # Distribution for a specific gene and sample, filtered by subtype.
-            celltype = kwargs.get('celltype', None)
-            gene = kwargs.get('gene', None)
-            sample = kwargs.get('sample', None)
-            self.celltype = plot.check_celltype(pop, celltype)
-            self.gene = plot.check_gene(pop, gene)
-            self.sample = plot.check_sample(pop, sample)
-            self.geneidx = pop['filtered_genes'].index(self.gene)
-
+        if type_ == 'g_s_ct': # Distribution for a specific gene and sample, filtered by celltype.
+            self.celltype = plot.check_celltype(pop, kwargs.get('celltype', None))
         elif type_ == 'g_s_rp': # Distribution for a specific gene and sample, filtered by reference population.
-            refpop = kwargs.get('refpop', None)
-            gene = kwargs.get('gene', None)
-            sample = kwargs.get('sample', None)
-            self.refpop = refpop
-            self.gene = plot.check_gene(pop, gene)
-            self.sample = plot.check_sample(pop, sample)
-            self.geneidx = pop['filtered_genes'].index(self.gene)
-              
+            self.refpop = kwargs.get('refpop', None)
+        elif type_ == 'g_s': # Distribution for all cells for a specific gene and sample.
+            pass
+
         self.bins = None # This will store the bin values.
         self.nbins = nbins
         self.binmax = 0 # This will be the maximum bin value (i.e. bins[-1])
@@ -88,6 +82,9 @@ class BarPlot(plot.Plot):
             idx_getter = self.__get_ct_idxs
         elif self.type_ == 'g_s_rp':
             idx_getter = self.__get_rp_idxs
+        elif self.type_ == 'g_s':
+            # This lambda function should return a numpy array with every index in the sample.
+            idx_getter = lambda sample : np.arange(get_ncells(self.pop, sample=sample))
         
         binmax = self.__g_s_binmax(idx_getter=idx_getter)
         self.binmax = binmax # Store the binmax in the object.
@@ -274,16 +271,18 @@ class BarPlot(plot.Plot):
 
 # NOTE: This function is a little redundant... It's main use is for flexibility, and so that
 # L1 values can be calculated with multiprocessing for sp HeatmapPlots.
-def calculate_l1(bar, ref=None):
+def calculate_l1(pop, gene, sample):
     '''
-    Calculates the L1 norm between two BarPlot objects and returns it. 
+    Calculates the L1 norm for a particular gene in a particular sample relative to controls,
+    and returns it.
 
     Parameters
     ----------
-    bar : BarPlot
-        A BarPlot object which operates as the 'test' BarPlot.
-    ref : BarPlot
-        Another BarPlot, which operates as the 'reference' BarPlot. If None, the ctrls
-        stored in the BarPlot object will be used. 
+    gene : str 
+    sample : str
     '''
-    return bar.calculate_l1(ref=ref)
+    params = {'gene':gene, 'sample':sample, 'merge_samples':True}
+    bar = BarPlot(pop, type_='g_s', **params) 
+    l1 = bar.calculate_l1()
+    
+    return l1 

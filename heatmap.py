@@ -122,7 +122,6 @@ class HeatmapPlot(plot.Plot):
         if unsupervised: # If analysis is unsupervised, get the cutoff.
             data_getter = self.__get_sample_data_unsupervised
             cutoff = self.__get_cutoff(**params) # Get the L1 cutoff from controls.
-            params['cutoff'] = cutoff # Add the cutoff to params.
             genes = self.allgenes
         else:
             data_getter = self.__get_sample_data
@@ -131,21 +130,21 @@ class HeatmapPlot(plot.Plot):
         
         ngenes, nsamples = len(genes), len(self.samples)
         t0 = time.time() # Get the start time for performance info.
-        # nans = [] # List to store the indices to be poplulated with NaNs.
+        nans = [] # List to store the indices to be poplulated with NaNs.
         data = np.zeros((nsamples, ngenes)) # Initialize an array where rows are samples and columns are genes.
         for i in range(nsamples):
             sample = self.samples[i]
-            # rep = sample + '_rep'
+            rep = sample + '_rep'
             print(f'Gathering {sample} data...    \r', end='')
 
-            # mincells = 50 # The minimum number of cells needed to make a valid distribution
-            # ncells = plot.get_ncells(self.pop, sample=sample, celltype=celltype)
-            # if self.merge_samples: 
-            #     ncells += plot.get_ncells(self.pop, sample=rep, celltype=celltype)
-            # if ncells < mincells:
-            #     nans.append(i)
+            mincells = 50 # The minimum number of cells needed to make a valid distribution
+            ncells = plot.get_ncells(self.pop, sample=sample, **params)
+            if self.merge_samples: 
+                ncells += plot.get_ncells(self.pop, sample=rep, **params)
+            if ncells < mincells:
+                nans.append(i)
             
-            sampledata = data_getter(sample=sample, **params)
+            sampledata = data_getter(sample=sample, cutoff=cutoff, **params)
             data[i] = sampledata # Add the L1 data to the data matrix.
 
         t1 = time.time()
@@ -176,12 +175,12 @@ class HeatmapPlot(plot.Plot):
             self.ylabels = samples
 
         # For the datapoints corresponding to distributions with ncells < mincells, replace the current value with NaN.
-        # for i in nans:
-            # data[i] = np.array([np.nan] * data.shape[1])
+        for i in nans:
+            data[i] = np.array([np.nan] * data.shape[1])
 
         return data
      
-    def __get_sample_data(self, sample=None):
+    def __get_sample_data(self, sample=None, cutoff=None, merge_samples=True):
         '''
         Retrieve the L1 norm for a certain sample for all specified genes. As this analysis is 
         supervised, a genes list must be stored in self.xlabels.
@@ -190,10 +189,11 @@ class HeatmapPlot(plot.Plot):
         ----------
         sample : str
             The sample from which to collect data.
-        **kwargs : str or int
-            Either a celltype (str) or reference population number (int), which will be passed into 
+        cutoff : float
+            Not for use in this function; argument is present for consistency.
+        merge_samples : bool
         '''
-        genes = self.xlabels
+        genes = self.genes
         if self.type_ == 's_ct':
             bar_type = 'g_s_ct'
             bar_params = {'celltype':self.celltype}
@@ -203,28 +203,27 @@ class HeatmapPlot(plot.Plot):
         
         l1s = np.array([])
         for gene in genes:
-            bar_params.update({'gene':gene, 'sample':sample, 'merge_samples':self.merge_samples})
+            bar_params.update({'gene':gene, 'sample':sample, 'merge_samples':merge_samples})
             bar = barplot.BarPlot(self.pop, type_=bar_type, **bar_params)    
             l1 = bar.calculate_l1() # Get the L1 metric for the distribution (reference is control by default).
             l1s = np.append(l1s, l1) # Add the L1 value.
 
         return l1s
     
-    def __get_sample_data_unsupervised(self, sample=None, cutoff=0.5, merge_samples=True, **kwargs):
+    def __get_sample_data_unsupervised(self, sample=None, cutoff=0.5, merge_samples=True):
         '''
         '''
         if self.type_ == 's_ct':
-            bartype = 'g_s_ct'
-            assert kwargs.get('celltype', None) is not None, 'A celltype must be specified for type_ s_ct.'
+            bar_type = 'g_s_ct'
+            bar_params = {'celltype':self.celltype}
         elif self.type_ == 's_rp':
-            bartype = 'g_s_rp'
-            assert kwargs.get('refpop', None) is not None, 'A reference population must be specified for type_ s_rp.'
+            bar_type = 'g_s_rp'
+            bar_params = {'refpop':self.refpop}
         
         l1s = np.array([])
         for gene in self.allgenes:
-            params = {'gene':gene, 'sample':sample, 'merge_samples':merge_samples}
-            params.update(kwargs)
-            bar = barplot.BarPlot(self.pop, type_=bartype, **params) 
+            bar_params.update({'gene':gene, 'sample':sample, 'merge_samples':merge_samples})
+            bar = barplot.BarPlot(self.pop, type_=bar_type, **bar_params) 
             
             l1 = bar.calculate_l1()
             l1s = np.append(l1s, l1)
@@ -235,11 +234,6 @@ class HeatmapPlot(plot.Plot):
         self.downreg = np.append(self.downreg, self.allgenes[downidxs])
  
         return l1s
-      
-        # pool = multiprocessing.pool.Pool(os.cpu_count()) # Inititialize multiprocessing object.
-        # l1s = pool.starmap(barplot.calculate_l1, [(testbars[i], refbars[i]) for i in range(ngenes)])
-        # NOTE: starmap() is just like map, but it passes the elements in the iterable as individual arguments
-        # rather than as a single argument (i.e. func(*args) rather than func(args))
 
     def __get_cutoff(self, tail=0.001, **kwargs):
         '''
@@ -254,7 +248,7 @@ class HeatmapPlot(plot.Plot):
         ctrl_l1s = np.array([])
         for ctrl in self.ctrls:
             # Turn off merge_samples when evaluating the controls. 
-            l1s = self.__get_sample_data_unsupervised(sample=ctrl, merge_samples=False, **kwargs)
+            l1s = self.__get_sample_data_unsupervised(sample=ctrl, merge_samples=False)
             ctrl_l1s = np.append(ctrl_l1s, l1s)
         
         distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
@@ -294,8 +288,12 @@ class HeatmapPlot(plot.Plot):
         model = skl.cluster.AgglomerativeClustering(n_clusters=self.cluster_nclusters,
                                                     affinity='precomputed', # Distance matrix was precomputed.
                                                     linkage=self.cluster_linkage) # Create the clustering model.
-        
-        sorter = get_sorter(model, X=X) # Get the indices with which to sort the data and data labels.
+ 
+        # Get the indices with which to sort the data and data labels.
+        clusteridxs = model.fit_predict(X=X) # Return the clustering labels.
+        nelements = len(clusteridxs) # Get the number of elements to sort.
+        sorter = [idx for (_, idx) in sorted(zip(clusteridxs, list(range(nelements))))]
+    
         labels = labels[sorter] # Sort the labels to match the data.
         if axis == 'y':
             data = data[sorter, :] # Sort the data.
@@ -317,6 +315,11 @@ class HeatmapPlot(plot.Plot):
         '''
         Plots dendrograms on the x, y, or both axes, depending on which linkage matrices have been
         calculated.
+        
+        Parameters
+        ----------
+        daxes : tuple
+            A two-tuple of matplotlib.axes.Axes objects on which to plot the dendrograms.
         '''
         xdax, ydax = daxes # Get the axes for the x and y-axis dendrograms.
         ydax.axis('off') # Turn off axes display.
@@ -414,108 +417,4 @@ class HeatmapPlot(plot.Plot):
         cbar = plt.colorbar(mappable, cax=cax, ticks=[-2, 0, 2])
         cbar.ax.set_title('L1 norm', fontdict={'fontsize':fontsize})
         cbar.ax.set_yticklabels(['-2', '0', '2'], fontdict={'fontsize':fontsize})
-
-
-# Accessory functions --------------------------------------------------------------------------------------
-
-def get_sorter(model, X=None):
-    '''
-    Takes the indices generated by the AgglomerativeClustering model, which assigns each sample element to a 
-    cluster, and produces a list of indices to sort each element according to its assigned cluster.
-    
-    Parameters
-    ----------
-    model : sklearn.cluster.AgglomerativeClustering
-        The agglomerative clustering model generated using the data.
-    X : np.array
-        A 2-D array representing a distance matrix.
-    '''
-    clusteridxs = model.fit_predict(X=X) # Return the clustering labels.
-    
-    nelements = len(clusteridxs) # Get the number of elements to sort.
-    idxs = list(range(nelements))
-    sorter = [idx for (_, idx) in sorted(zip(clusteridxs, idxs))]
-    
-    return sorter
-
-
-# def diffexp_get_cutoff(pop, refpop=None, tail=0.2):
-#     '''
-#     '''
-#     ref = pop['ref']
-#     # Get all controls that are not the ref sample.
-#     ctrls = [s for s in pop['samples'].keys() if re.match(pop['controlstring'], s) is not None and s != ref]
-#     
-#     ctrl_l1s = np.array([])
-#     for ctrl in ctrls:
-#         # Turn off merge_samples when evaluating the controls. 
-#         l1s, upreg, downreg = diffexp_get_sample(pop, refpop=refpop, sample=ctrl, merge_samples=False)
-#         ctrl_l1s = np.append(ctrl_l1s, l1s)
-#     
-#     distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
-#     return distribution.ppf(tail)
-# 
-# 
-# def diffexp_get_sample(pop, refpop=None, sample=None, cutoff=0.5, merge_samples=True):
-#     '''
-#     Calculates the L1 norm for each gene. The vectors used to calculate the L1 norm contain the expression data
-#     of that gene across each cell in a subpopulation (refpop and the aligned subpopulation in the specified sample).
-#     It returns an numpy array of norms, one for each gene in pop['filtered_genes'], as well as which genes were
-#     highly up-or-down regulated; these genes are determined by the cutoff. 
-# 
-#     Parameters
-#     ----------
-#     refpop : int
-#         The index of the subpopulation in the reference sample. This is used to identify the 
-#         aligned subpopulations in the inputted sample.
-#     sample : str
-#         The name of the sample being compared to the reference sample.
-#     cutoff : float
-#         The L1 norm cutoff which determines whether or not a gene is differentially expressed. If the
-#         cutoff is 0.5, then only genes with an L1 value above 0.5 or below -0.5 are returned. 
-#     merge_samples : bool
-#         Whether or not the samples are being merged.
-#     '''
-#     # NOTE: The reference sample is one of the controls.
-#     assert sample in pop['samples'].keys(), 'Sample name is invalid.'
-#     ref = pop['ref']
-#     
-#     # NOTE: arr is a three-by-three array. I'm guessing the second column contains the indices of the
-#     # reference subpopulation to which the subpopulation in the first column aligns. 
-#     alignments = pop['samples'][sample]['alignments'] # Get the alignments for the specified sample.
-#     testpop = np.where(alignments[:, 1] == refpop) # Get the index of the sample population aligned to refpop.
-#     assert len(testpop) > 0, f'No alignments were found for {sample}.'
-# 
-#     l1s = np.array([])
-#     for gene in pop['filtered_genes']:
-#         testbar = barplot.BarPlot(pop, 
-#                                   type_='g_s_rp', 
-#                                   refpop=refpop, 
-#                                   sample=sample, 
-#                                   merge_samples=merge_samples,
-#                                   init_controls=False,
-#                                   gene=gene)
-#         refbar = barplot.BarPlot(pop, 
-#                                  type_='g_s_rp', 
-#                                  refpop=refpop, 
-#                                  sample=ref, 
-#                                  merge_samples=False,
-#                                  init_controls=False,
-#                                  gene=gene)
-#         l1s = np.append(l1s, barplot.calculate_l1(testbar, ref=refbar)) 
-#     
-#     # pool = multiprocessing.pool.Pool(os.cpu_count()) # Inititialize multiprocessing object.
-#     # l1s = pool.starmap(barplot.calculate_l1, [(testbars[i], refbars[i]) for i in range(ngenes)])
-#     # NOTE: starmap() is just like map, but it passes the elements in the iterable as individual arguments
-#     # rather than as a single argument (i.e. func(*args) rather than func(args))
-# 
-#     genes = np.array(pop['filtered_genes'])
-#     upidxs = np.where(np.array(l1s) > cutoff)
-#     downidxs = np.where(np.array(l1s) < -1 * cutoff)
-#     print(l1s)    
-#     return np.array(l1s), genes[upidxs], genes[downidxs]
-
-
-
-
 
