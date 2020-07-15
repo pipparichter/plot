@@ -27,14 +27,12 @@ class BarPlot(plot.Plot):
         is_subplot : bool
             Whether or not the plot is a subplot.
         '''
-        self.merge_samples = kwargs.get('merge_samples', True)
-
         # Parent class inititalization ------------------------------------------------------      
         super().__init__(pop, is_subplot=is_subplot)
         # Set the plotting function and default colors.
         self.plotter = self._plotter
         self.color = ('lightsalmon', 'turquoise')
-        
+
         # Type-specific initialization ------------------------------------------------------
         options = ['g_s_ct', 'g_s_rp', 'g_s']
         assert type_ in options, f'The type_ parameter must be one of: {options}.'
@@ -43,6 +41,10 @@ class BarPlot(plot.Plot):
         self.gene = plot.check_gene(pop, kwargs.get('gene', None))
         self.sample = plot.check_sample(pop, kwargs.get('sample', None))
         self.geneidx = pop['filtered_genes'].index(self.gene)
+        
+        self.merge_samples = kwargs.get('merge_samples', True)
+        if self.sample in self.ctrls: # Make sure merge_samples is off if the sample is a control.
+            self.merge_samples = False
 
         if type_ == 'g_s_ct': # Distribution for a specific gene and sample, filtered by celltype.
             self.celltype = plot.check_celltype(pop, kwargs.get('celltype', None))
@@ -58,8 +60,7 @@ class BarPlot(plot.Plot):
         self.mean, self.ctrl_mean = 0, 0 # The means of the data and controls.
 
         # Populate the data, bin, and binmax attributes.
-        self.init_ctrls = kwargs.get('init_ctrls', True)
-        self.data = self.__g_s_get_data(init_ctrls=self.init_ctrls) 
+        self.data = self.__g_s_get_data() 
 
         # Adjust the filepath -------------------------------------------------------------------
         self.filepath.append('barplots')
@@ -67,15 +68,9 @@ class BarPlot(plot.Plot):
 
     # G_S_* --------------------------------------------------------------------
 
-    def __g_s_get_data(self, init_ctrls=True):
+    def __g_s_get_data(self):
         '''
         Initializes the data and bin attributes with data from the pop object.
-
-        Parameters
-        ----------
-        init_ctrls : bool
-            Whether or not to initialize controls. This option reduces computational cost when using
-            the BarPlot class to find differentially expressed genes. 
         '''
         # Assign the function which will be used for gathering the relevant indices. 
         if self.type_ == 'g_s_ct':
@@ -101,11 +96,10 @@ class BarPlot(plot.Plot):
             return data
  
         ctrl_arr, ctrl_ncells = np.array([]), 1 
-        if init_ctrls: # If the init_ctrls setting is True...    
-            for ctrl in self.ctrls:
-                ctrl_idxs = idx_getter(ctrl) # Get the control data of the first control sample. 
-                ctrl_arr = np.append(ctrl_arr, self.pop['samples'][ctrl]['M_norm'].toarray()[self.geneidx][ctrl_idxs])
-                ctrl_ncells += len(ctrl_idxs)   
+        for ctrl in self.ctrls:
+            ctrl_idxs = idx_getter(ctrl) # Get the control data of the first control sample. 
+            ctrl_arr = np.append(ctrl_arr, self.pop['samples'][ctrl]['M_norm'].toarray()[self.geneidx][ctrl_idxs])
+            ctrl_ncells += len(ctrl_idxs)   
 
         self.ctrl_mean = np.mean(ctrl_arr) # Store the mean as an attribute.
         ctrl_data, _ = np.histogram(ctrl_arr, bins=self.nbins, range=(0, binmax))
@@ -142,8 +136,8 @@ class BarPlot(plot.Plot):
         subpop = alignments[r, 0] # Get the aligned subpopulation. 
         
         # Get the subpopulation assignments of every cell in the test and reference samples.
-        t = PA.get_coeff(self.pop, sample)
-        assignments = self.pop['samples'][sample]['gmm'].predict(t)
+        c = PA.get_coeff(self.pop, sample)
+        assignments = self.pop['samples'][sample]['gmm'].predict(c)
         # Get the indices of the cells which belong to refpop and the aligned test subpopulation.
         subpopidxs = np.where(assignments == subpop)[0]
         
@@ -193,7 +187,7 @@ class BarPlot(plot.Plot):
     
     # -------------------------------------------------------------------------------------------------------
 
-    def _plotter(self, axes, color=None, fontsize=None):
+    def _plotter(self, axes, color=None, fontsize=None, flip_axes=False):
         '''
         Generate a single barplot for a specified gene using the inputted axes. 
         Transcript counts are plotted on the axis, and percentage of cells which 
@@ -253,8 +247,6 @@ class BarPlot(plot.Plot):
         testdata = self.data
         testmean = self.mean
         if ref is None: # If no reference BarPlot is specified, use the control data. 
-            # Make sure the control data has been inititalized.
-            assert self.init_ctrls is True, 'Controls have not been inititalized; a reference BarPlot must be given.'
             refdata = self.ctrl_data
             refmean = self.ctrl_mean
         else: 
@@ -271,18 +263,30 @@ class BarPlot(plot.Plot):
 
 # NOTE: This function is a little redundant... It's main use is for flexibility, and so that
 # L1 values can be calculated with multiprocessing for sp HeatmapPlots.
-def calculate_l1(pop, gene, sample):
+def calculate_l1(pop, gene, sample, merge_samples=True, **kwargs):
     '''
     Calculates the L1 norm for a particular gene in a particular sample relative to controls,
     and returns it.
 
     Parameters
     ----------
+    pop : dict
+        The PopAlign object.
     gene : str 
+        A valid gene name.
     sample : str
+        A valid sample name. 
     '''
-    params = {'gene':gene, 'sample':sample, 'merge_samples':True}
-    bar = BarPlot(pop, type_='g_s', **params) 
+    if kwargs.get('celltype', None) is not None:
+        bar_type = 'g_s_ct'
+    elif kwargs.get('refpop', None) is not None:
+        bar_type = 'g_s_rp'
+    else: # If no filter is specified...
+        bar_type = 'g_s' # The distribution will be general. 
+
+    params = {'gene':gene, 'sample':sample, 'merge_samples':merge_samples}
+    params.update(kwargs) # Add the keyword argument to parameters. 
+    bar = BarPlot(pop, type_=bar_type, **params) 
     l1 = bar.calculate_l1()
     
     return l1 

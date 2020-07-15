@@ -70,7 +70,7 @@ class Plot():
             self.figure = plt.figure(figsize=(20, 20))
             self.axes = self.figure.add_axes([0, 0, 1, 1])
 
-    def plot(self, color=None, fontsize=20, axes=None):
+    def plot(self, color=None, fontsize=20, axes=None, flip_axes=False):
         '''
         Graphs the Plot object on the axes.
 
@@ -96,7 +96,7 @@ class Plot():
         if color is None: # If color is not specified, use the default color. 
             color = self.color
 
-        self.plotter(self.axes, color=color, fontsize=fontsize)
+        self.plotter(self.axes, color=color, fontsize=fontsize, flip_axes=flip_axes)
         self.plotted = True
 
     def save(self, filename=None):
@@ -281,7 +281,7 @@ def check_samples(pop, samples, filter_reps=True, filter_ctrls=True):
 
 # Differentially expressed gene selection ------------------------------------------------------------
 
-def get_diffexp(pop, cluster=True, nclusters=3):
+def get_diffexp_data(pop, **kwargs):
     '''
     Returns a dictionary storing information on differentially expressed genes. It stores a list of the
     up and down-regulated genes by sample, as well as an nsamples by ngenes 2-D array containing the
@@ -294,81 +294,65 @@ def get_diffexp(pop, cluster=True, nclusters=3):
     ----------
     pop : dict
         The PopAlign object.
-    cluster : bool
-        Whether or not to cluster the genes by expression.
-    nclusters : int
-        If cluster == True, this is the number of clusters into which the differentially-expressed
-        genes will be grouped.
     '''
     genes = np.array(pop['filtered_genes'])
     samples = check_samples(pop, pop['order'], filter_ctrls=True, filter_reps=True)
     ctrls = [s for s in pop['order'] if re.match(pop['controlstring'], s) is not None]
-    
-    diffexp = {}
-    diffexp['samples'] = {}
+    diffexp_data = {}
+    diffexp_data['samples'] = {}
 
     print(f'Calculating cutoff...    \r', end='')
     ctrl_l1s = np.array([])
     for ctrl in ctrls:
         # Turn off merge_samples when evaluating the controls. 
         for gene in genes:
-            params = {'gene':gene, 'sample':ctrl, 'merge_samples':False}
-            bar = barplot.BarPlot(pop, type_='g_s', **params) 
-            l1 = bar.calculate_l1()
+            l1 = barplot.calculate_l1(pop, gene, ctrl, **kwargs)
             ctrl_l1s = np.append(ctrl_l1s, l1)
     distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
     cutoff = abs(distribution.ppf(0.001)) # Sometimes this value is negative, so take the absolute value.
     print(f'Cutoff is {cutoff}.    ')
     
     t0 = time.time()
-    diff_genes = np.array([]) # A list to store all differentially-expressed genes.
-    all_l1s = np.zeros((len(samples), len(genes)))
+    diff_genes, diff_l1s = np.array([]), np.array([]) 
+    all_l1s = np.zeros((len(samples), len(genes))) # A 2-D array to store the L1 values.
     for i in range(len(samples)):
-        print(f'Gathering data for sample {i} of {len(samples)}...    \r', end='')
+        print(f'Gathering differential expression data for sample {i} of {len(samples)}...    \r', end='')
         sample = samples[i]
 
         l1s = np.array([])
         for gene in genes:
-            l1 = barplot.calculate_l1(pop, gene, sample)
+            l1 = barplot.calculate_l1(pop, gene, sample, **kwargs)
             l1s = np.append(l1s, l1)
         all_l1s[i] = l1s
+        
+        downidxs = np.where(l1s < -1 * cutoff)[0]
+        upidxs = np.where(l1s > cutoff)[0]
 
-        down = genes[np.where(l1s < -1 * cutoff)[0]]
-        up = genes[np.where(l1s > cutoff)[0]]
-        diffexp['samples'][sample] = {}
-        diffexp['samples'][sample]['up'] = up
-        diffexp['samples'][sample]['down'] = down
-        diff_genes = np.append()
+        diffexp_data['samples'][sample] = {}
+        diffexp_data['samples'][sample]['up'] = genes[upidxs]
+        diffexp_data['samples'][sample]['down'] = genes[downidxs]
+
+        # Add the new up and down-regulated genes to array of differentially-expressed genes.
+        # Also add the corresponding L1 values for the given sample, making sure the order of the 
+        # two arrays corresponds.
+        diff_genes = np.concatenate((diff_genes, genes[upidxs], genes[downidxs]))
+        diff_l1s = np.concatenate((diff_l1s, l1s[upidxs], l1s[downidxs])) 
 
     t1 = time.time()
-    print(f'All sample data gathered: {int(t1 - t0)} seconds.    ')
-    diffexp['l1s'] = all_l1s # Store the calculated L1 values.
+    print(f'All differential expression data gathered: {int(t1 - t0)} seconds.    ')
     
-    # Remove duplicates from the list of differentially expressed genes, while preserving order. 
-    # NOTE: return_index=True makes np.unique return an array of indices which result in the unique array. 
-    diff_genes = np.unique(diff_genes) 
-    diffexp['all'] = diff_genes 
+    idxs = np.argsort(diff_l1s) # Get the sorting indices to order by L1 value.
+    diff_genes = diff_genes[idxs] # Order diff_genes by L1 value.
     
-    if cluster:
-        t0 = time.time()
-        print('Clustering genes...    \r', end='')
-        diffexp['clusters'] = []
-    
-        geneidxs = np.array([np.where(genes == g)[0] for g in diff_genes])
-        diff_l1s = np.transpose(all_l1s)[geneidxs]
+    # Make sure to preserve the order of diff_genes when removing duplicates (np.unique()) will 
+    # automatically sort the array, so account for that).
+    _, order = np.unique(diff_genes, return_index=True)
+    diff_genes = diff_genes[np.sort(order)]
 
-        X = skl.metrics.pairwise_distances(X=diff_l1s, metric='euclidean') # Get the distance matrix.
-        model = skl.cluster.AgglomerativeClustering(n_clusters=nclusters,
-                                                    affinity='precomputed', # Distance matrix was precomputed.
-                                                    linkage='complete') # Create the clustering model.
-        clusters = model.fit_predict(X=X)
-        for i in range(nclusters):
-            clusteridxs = np.where(clusters == i)
-            diffexp['clusters'].append(diff_genes[clusteridxs])
-        t1 = time.time()
-        print(f'Genes clustered: {int(t1 - t0)} seconds.    ')
-
-    return diffexp
+    diffexp_data['l1s'] = all_l1s # Store the calculated L1 values.
+    diffexp_data['all'] = diff_genes
+    
+    return diffexp_data
       
     
 

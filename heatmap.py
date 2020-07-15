@@ -4,10 +4,6 @@ import numpy as np
 import sklearn as skl
 import time
 import scipy.cluster.hierarchy as sch
-# import multiprocessing
-# import os
-# import re
-import scipy.stats
 
 import sys
 sys.path.insert(0, './popalign/popalign')
@@ -33,7 +29,7 @@ class HeatmapPlot(plot.Plot):
         pop : dict
             The pop object.
         type_ : str
-            One of 's_ct', 'sp_s', or 'sp_rp'. This specifies what will be plotted on the Heatmap.
+            One of 'ct', rp'. This specifies what will be plotted on the Heatmap.
         is_subplot : bool
             Whether or not the heatmap is a subplot.
         cluster : bool
@@ -58,47 +54,75 @@ class HeatmapPlot(plot.Plot):
         self.color = 'bwr'
         
         # Clustering -----------------------------------------------------------------------
-        self.cluster = cluster 
+        self.cluster_ = cluster 
         self.cluster_plot_dendrograms = kwargs.get('cluster_plot_dendrograms', True)
         self.cluster_metric = kwargs.get('cluster_metric', 'euclidean') 
         self.cluster_linkage = kwargs.get('cluster_linkage', 'complete') 
         self.cluster_nclusters = kwargs.get('cluster_nclusters', 3) 
         self.cluster_axis = kwargs.get('cluster_axis', 'both')
-
+        
+        self.clusters = {} # A dictionary in which to store the cluster groups. 
         self.lms = [None, None] # A list which will store the linkage matrices.
         
         # Differential expression ----------------------------------------------------------
-        self.diffexp = None
-        self.upreg = np.array([])
-        self.downreg = np.array([])
-        self.genes = plot.check_genes(pop, kwargs.get('genes', None)) 
-        
+        diffexp_data = kwargs.get('diffexp_data', None)
+        self.diffexp, self.upreg, self.downreg, self.all_l1s = self.__load_diffexp_data(diffexp_data)
+        self.genes = self.diffexp # If diffexp_data was not None, self.genes is now a list of genes.
+
         # Type-specific initialization ------------------------------------------------------
-        options = ['s_ct', 's_rp']
+        options = ['ct', 'rp']
         assert type_ in options, f'The type_ parameter must be one of: {options}.'
         self.type_ = type_
         
-        if type_ == 's_ct': # Samples filtered by a celltype.
-            self.celltype = plot.check_celltype(self.pop, kwargs.get('celltype', None))
+        # If genes are specified in the arguments, assign them to self.genes. If not, keep it as is.
+        # NOTE: This means that genes specified directly will override diffexp genes.
+        self.genes = kwargs.get('genes', self.genes)
+        if type_ == 'ct': # Samples filtered by a celltype.
+            self.celltype = plot.check_celltype(pop, kwargs.get('celltype', None))
         
-        elif type_ == 's_rp': # Samples filtered by a reference population.
+        elif type_ == 'rp': # Samples filtered by a reference population.
             self.refpop = kwargs.get('refpop', None)
             self.ref = pop['ref'] # Store the name of the reference sample.
             self.celltype = pop['samples'][self.ref]['gmm_types'][self.refpop] # Get the type of the subpopulation.
        
+        # If a gene list was specified, assign it to self.genes attribute. If not, keep the previous assignment
+        # (either None or diffexp from diffexp_data). 
+        self.genes = plot.check_genes(pop, kwargs.get('genes', self.genes))
+
+        self.ylabels = self.samples
+        self.xlabels = None # This will be assigned in the get_data function.
         if self.genes is None: # If no genes are given, proceed with unsupervised gene selection.
             self.data = self.__s_get_data(unsupervised=True)
         else: # If genes are specified, use those genes. 
             self.data = self.__s_get_data(unsupervised=False)
-
-        self.ylabels = self.samples
-        self.xlabels = self.genes
-        
+       
         # Adjusting the filepath -------------------------------------------------------------
         self.filepath.append('heatmap') # Assign plot to 'heatmap' directory.
         self.filename = f'heatmap.png'
     
-    # S_* ------------------------------------------------------------------------------------------------
+    def __load_diffexp_data(self, diffexp_data):
+        '''
+        '''
+        diffexp = None
+        upreg, downreg = np.array([]), np.array([])
+        all_l1s = None
+
+        if diffexp_data is not None:
+            diffexp = diffexp_data['all']
+            # Get lists of all genes differentially up or down-regulated in any sample.
+            for sample in self.samples:
+                upreg = np.append(upreg, diffexp_data['samples'][sample]['up'])
+                downreg = np.append(downreg, diffexp_data['samples'][sample]['down'])
+        
+            # Remove duplicates.
+            upreg = np.unique(upreg)
+            downreg = np.unique(downreg)
+
+            all_l1s = diffexp_data['l1s']
+
+        return diffexp, upreg, downreg, all_l1s
+
+    # S_* ------------------------------------------------------------------------------------------------ 
     
     def __s_get_data(self, unsupervised=False):
         '''
@@ -109,81 +133,43 @@ class HeatmapPlot(plot.Plot):
         
         Parameters
         ----------
-        celltype : str
-            The celltype for which to collect the data, i.e. the label of the subplot.
         unsupervised : bool
-            Whether or not genes should be selected by an unsupervised algorithm.
+            Whether :or not genes should be selected by an unsupervised algorithm.
         '''
-        if self.type_ == 's_ct':
-            params = {'celltype':self.celltype}
-        elif self.type_ == 's_rp':
-            params = {'refpop':self.refpop} 
- 
         if unsupervised: # If analysis is unsupervised, get the cutoff.
+            if self.all_l1s is None: # Check to see if diffexp_data has already been loaded.
+                if self.type_ == 'ct':
+                    diffexp_data = plot.get_diffexp_data(self.pop, celltype=self.celltype)
+                elif self.type_ == 'rp':
+                    diffexp_data = plot.get_diffexp_data(self.pop, refpop=self.refpop)
+            
+                self.diffexp, self.upreg, self.downreg, self.all_l1s = self.__load_diffexp_data(diffexp_data)
+                self.genes = self.diffexp # Set self.genes equal to the differentially-expressed genes.
             data_getter = self.__get_sample_data_unsupervised
-            cutoff = self.__get_cutoff(**params) # Get the L1 cutoff from controls.
-            genes = self.allgenes
-        else:
-            data_getter = self.__get_sample_data
-            cutoff = None
-            genes = self.xlabels
         
-        ngenes, nsamples = len(genes), len(self.samples)
+        else: # If a list of genes has been specified... 
+            data_getter = self.__get_sample_data
+        
+        ngenes, nsamples = len(self.genes), len(self.samples)
         t0 = time.time() # Get the start time for performance info.
-        nans = [] # List to store the indices to be poplulated with NaNs.
         data = np.zeros((nsamples, ngenes)) # Initialize an array where rows are samples and columns are genes.
         for i in range(nsamples):
-            sample = self.samples[i]
-            rep = sample + '_rep'
-            print(f'Gathering {sample} data...    \r', end='')
-
-            mincells = 50 # The minimum number of cells needed to make a valid distribution
-            ncells = plot.get_ncells(self.pop, sample=sample, **params)
-            if self.merge_samples: 
-                ncells += plot.get_ncells(self.pop, sample=rep, **params)
-            if ncells < mincells:
-                nans.append(i)
-            
-            sampledata = data_getter(sample=sample, cutoff=cutoff, **params)
-            data[i] = sampledata # Add the L1 data to the data matrix.
-
+                sample = self.samples[i]
+                print(f'Gathering data for sample {i} of {nsamples}...    \r', end='')
+                sampledata = data_getter(sample=sample)
+                data[i]= sampledata # Add the L1 data to the data matrix.
         t1 = time.time()
-        print(f'Sample data gathered: {t1 - t0} seconds    ')
+        print(f'All sample data gathered: {int(t1 - t0)} seconds    ')
         
-        if unsupervised:
-            # Remove duplicates from the list of differentially expressed genes, while preserving order. 
-            # NOTE: return_index=True makes np.unique return an array of indices which result in the unique array. 
-            diffexp = np.append(self.upreg, self.downreg)
-            _, order = np.unique(diffexp, return_index=True) 
-            diffexp = diffexp[np.sort(order)] # Sort the indices so xlabels is in the original order. 
-            # Filter L1 data by differentially expressed genes.
-            geneidxs = np.array([self.genedict[x] for x in diffexp.tolist()])
-            data = data[:, geneidxs]
-            self.diffexp = diffexp # Store differentially expressed genes.
-            self.genes = diffexp # Switch the genes variable from allgenes to diffexp.
-
+        self.xlabels = self.genes # Set the ylabels BEFORE clustering.
         if self.cluster: # If clustering is set to True...
-            if self.cluster_axis == 'x':
-                data, genes = self.__cluster(data, axis='x')
-            elif self.cluster_axis == 'y':
-                data, samples = self.__cluster(data, axis='y')
-            elif self.cluster_axis == 'both':
-                data, genes  = self.__cluster(data, axis='x')
-                data, samples = self.__cluster(data, axis='y')
-            # Change the axes labels stored in the object to match the new ordering.
-            self.xlabels = genes
-            self.ylabels = samples
-
-        # For the datapoints corresponding to distributions with ncells < mincells, replace the current value with NaN.
-        for i in nans:
-            data[i] = np.array([np.nan] * data.shape[1])
-
+            data = self.cluster(data=data)     
+        
         return data
      
-    def __get_sample_data(self, sample=None, cutoff=None, merge_samples=True):
+    def __get_sample_data(self, sample=None):
         '''
-        Retrieve the L1 norm for a certain sample for all specified genes. As this analysis is 
-        supervised, a genes list must be stored in self.xlabels.
+        Retrieve the L1 norms for a certain sample for all specified genes.
 
         Parameters
         ----------
@@ -194,87 +180,88 @@ class HeatmapPlot(plot.Plot):
         merge_samples : bool
         '''
         genes = self.genes
-        if self.type_ == 's_ct':
+        if self.type_ == 'ct':
             bar_type = 'g_s_ct'
             bar_params = {'celltype':self.celltype}
-        elif self.type_ == 's_rp':
+        elif self.type_ == 'rp':
             bar_type = 'g_s_rp'
             bar_params = {'refpop':self.refpop}
         
         l1s = np.array([])
         for gene in genes:
-            bar_params.update({'gene':gene, 'sample':sample, 'merge_samples':merge_samples})
+            bar_params.update({'gene':gene, 'sample':sample, 'merge_samples':True})
             bar = barplot.BarPlot(self.pop, type_=bar_type, **bar_params)    
             l1 = bar.calculate_l1() # Get the L1 metric for the distribution (reference is control by default).
             l1s = np.append(l1s, l1) # Add the L1 value.
 
         return l1s
     
-    def __get_sample_data_unsupervised(self, sample=None, cutoff=0.5, merge_samples=True):
+    def __get_sample_data_unsupervised(self, sample=None):
         '''
         '''
-        if self.type_ == 's_ct':
-            bar_type = 'g_s_ct'
-            bar_params = {'celltype':self.celltype}
-        elif self.type_ == 's_rp':
-            bar_type = 'g_s_rp'
-            bar_params = {'refpop':self.refpop}
-        
-        l1s = np.array([])
-        for gene in self.allgenes:
-            bar_params.update({'gene':gene, 'sample':sample, 'merge_samples':merge_samples})
-            bar = barplot.BarPlot(self.pop, type_=bar_type, **bar_params) 
-            
-            l1 = bar.calculate_l1()
-            l1s = np.append(l1s, l1)
-        
-        upidxs = np.where(l1s > cutoff)
-        downidxs = np.where(l1s < -1 * cutoff)
-        self.upreg = np.append(self.upreg, self.allgenes[upidxs])
-        self.downreg = np.append(self.downreg, self.allgenes[downidxs])
- 
+        # NOTE: The L1 data is in the order of pop['filtered_genes'], so we must use the indices
+        # stored in self.genedict to pull out the correct data.
+        geneidxs = np.array([self.genedict[gene] for gene in self.genes])
+        sampleidx = np.where(self.samples == sample)[0] # Get the index of the sample.
+        l1s = self.all_l1s[sampleidx, geneidxs] # Filter by gene indices.
+
         return l1s
-
-    def __get_cutoff(self, tail=0.001, **kwargs):
-        '''
-        Calculate the L1 cutoff using the control samples.
-
-        Parameters
-        ----------
-        tail : float
-            The percentage of all genes which should be included in the tails of the cutoff.
-        '''
-        print(f'Calculating cutoff for {self.celltype}...    \r', end='')
-        ctrl_l1s = np.array([])
-        for ctrl in self.ctrls:
-            # Turn off merge_samples when evaluating the controls. 
-            l1s = self.__get_sample_data_unsupervised(sample=ctrl, merge_samples=False)
-            ctrl_l1s = np.append(ctrl_l1s, l1s)
-        
-        distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
-        cutoff = abs(distribution.ppf(tail)) # Sometimes this value is negative, so return the absolute value.
-        print(f'Cutoff for {self.celltype} is {cutoff}.    ')
-
-        return cutoff
 
     # Clustering ------------------------------------------------------------------------------------
     
-    def __cluster(self, data, axis=None):
+    def cluster(self, data=None, **kwargs):
         '''
-        Runs an agglomerative hierarchical clustering algorithm on the inputted matrix. It uses
-        the cluster settings inputted at Heatmap initialization. It returns the modified matrix, 
-        the reordered data labels, and the clustering model generated.
+        Cluster the data. By default, clustering parameters set during initialization will be used, although
+        they can be overriden with keyword arguments.
 
         Parameters
         ----------
-        matrix : numpy.ndarray
+        data : numpy.array
+            Only for use if cluster is being called prior to population of the self.data attribute (i.e. 
+            within the initializer). None by default.
+        **kwargs : N/A
+            Various cluster settings. These will be passed directly into the self.__cluster_axis() function.
+        '''
+        if data is None:
+            data = self.data
+       
+        if self.cluster_axis == 'x':
+            data, xlabels = self.__cluster_axis(data, axis='x', **kwargs)
+            self.xlabels = xlabels
+        elif self.cluster_axis == 'y':
+            data, ylabels = self.__cluster_axis(data, axis='y', **kwargs)
+            self.ylabels = ylabels
+        elif self.cluster_axis == 'both':
+            data, xlabels  = self.__cluster_axis(data, axis='x', **kwargs)
+            data, ylabels = self.__cluster_axis(data, axis='y', **kwargs)
+            # Change the axes labels stored in the object to match the new ordering.
+            self.xlabels = xlabels
+            self.ylabels = ylabels
+
+
+        self.data = data # Reassign the data attribute.
+        return data # Return data just cause.
+
+    def __cluster_axis(self, data, axis=None, **kwargs):
+        '''
+        Runs an agglomerative hierarchical clustering algorithm on the inputted matrix along the 
+        specified axis. It uses the cluster settings inputted at Heatmap initialization, which can 
+        be overriden by keyword arguments. It returns the modified data and the reordered labels.
+
+        Parameters
+        ----------
+        data : numpy.ndarray
             A 2-D array which contains Heatmap data.
-        labels : numpy.array
-            An array which contains the data labels for the axis being sorted. 
         axis : str
             One of 'x' or 'y'. If 'y', the rows of the matrix are clustered; if 'x', 
             the columns of the matrix are clustered.
         '''
+ 
+        # Load the cluster settings, which can be overriden with keyword arguments to the function.
+        metric = kwargs.get('metric', self.cluster_metric) 
+        linkage = kwargs.get('linkage', self.cluster_linkage) 
+        nclusters = kwargs.get('nclusters', self.cluster_nclusters) 
+        
         if axis == 'x': # If clustering is to be carried out by column...
             matrix = data.T # Get the transpose of the inputted matrix.
             labels = self.xlabels
@@ -284,22 +271,27 @@ class HeatmapPlot(plot.Plot):
             
         # NOTE: This function returns a  matrix such that element {i, j} is the distance between 
         # the ith and jth vectors of the given matrix. 
-        X = skl.metrics.pairwise_distances(X=matrix, metric=self.cluster_metric) # Get the distance matrix.
-        model = skl.cluster.AgglomerativeClustering(n_clusters=self.cluster_nclusters,
+        X = skl.metrics.pairwise_distances(X=matrix, metric=metric) # Get the distance matrix.
+        model = skl.cluster.AgglomerativeClustering(n_clusters=nclusters,
                                                     affinity='precomputed', # Distance matrix was precomputed.
-                                                    linkage=self.cluster_linkage) # Create the clustering model.
+                                                    linkage=linkage) # Create the clustering model.
  
         # Get the indices with which to sort the data and data labels.
         clusteridxs = model.fit_predict(X=X) # Return the clustering labels.
         nelements = len(clusteridxs) # Get the number of elements to sort.
         sorter = [idx for (_, idx) in sorted(zip(clusteridxs, list(range(nelements))))]
-    
+        
+        self.clusters[axis] = []
+        for cluster in range(nclusters): # Store the clusters in an attribute.
+            idxs = np.where(clusteridxs == cluster)[0]
+            self.clusters[axis].append(labels[idxs])
+   
         labels = labels[sorter] # Sort the labels to match the data.
         if axis == 'y':
             data = data[sorter, :] # Sort the data.
         elif axis == 'x':
             data = data[:, sorter] # Sort the data.
-
+        
         # NOTE: Make sure to re-calculate the distance matrix for non-transposed and sorted data so that the 
         # dendrograms are accurate.
         if axis == 'x':
@@ -339,7 +331,7 @@ class HeatmapPlot(plot.Plot):
                            above_threshold_color='black',
                            no_labels=True)
 
-    def _plotter(self, axes, color=None, fontsize=None):
+    def _plotter(self, axes, color=None, fontsize=None, flip_axes=True):
         '''
         Plots a heatmap on the inputted axes.        
         
@@ -354,15 +346,18 @@ class HeatmapPlot(plot.Plot):
         fontsize : int
             Size of the font on the axes labels (not the title). 
         '''
- 
         assert isinstance(color, str), 'Color must be a string for a HeatMap object.'
             
         # Retrieve the data and data labels for the subplot.
-        data = self.data
-        xlabels, ylabels = self.xlabels, self.ylabels
+        if flip_axes:
+            data = np.transpose(self.data)
+            ylabels, xlabels = self.xlabels, self.ylabels
+        else:
+            data = self.data
+            xlabels, ylabels = self.xlabels, self.ylabels
         
         axes.axis('off') # Turn off the axes frame.
-        axes.set_title('Expression by subpopulation', fontdict={'fontsize':30})
+        axes.set_title(f'Expression in {self.celltype}', fontdict={'fontsize':28})
         
         # Get information for creating a layout; if the HeatmapPlot is a subplot, the layout
         # will need to be constructed relative the the larger figure.
@@ -377,7 +372,7 @@ class HeatmapPlot(plot.Plot):
             x0, y0 = 0, 0
         # Create a layout for all the subcomponents of the heatmap...
         # If cluster=True and plot_dendrograms is set to True (or left blank), plot the dendrograms.
-        if self.cluster and self.cluster_plot_dendrograms:
+        if self.cluster_ and self.cluster_plot_dendrograms:
             d = 0.075 * w # The thickness of the dendrogram plots.
             mainw, mainh = 0.7 * w, 0.9 * h # The dimensions of the main axes.
             
@@ -407,7 +402,7 @@ class HeatmapPlot(plot.Plot):
         for label in xlabels: # Make x-axis labels vertical.
             label.set_rotation('vertical')
         # If dendrograms are plotted, move the y-tick labels to make room for the dendrograms.
-        if self.cluster and self.cluster_plot_dendrograms: 
+        if self.cluster_ and self.cluster_plot_dendrograms: 
             mainax.yaxis.set_label_position('right')
             mainax.yaxis.tick_right() 
        
