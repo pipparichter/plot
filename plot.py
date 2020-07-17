@@ -5,7 +5,8 @@ import re
 import scipy
 import time 
 from plotpop import barplot
-import sklearn as skl
+# import sklearn as skl
+import pandas as pd
 import sys
 sys.path.insert(0, './popalign/popalign')
 import popalign as PA
@@ -35,7 +36,7 @@ class Plot():
         filename : str
             The filename under which to save the Plot.
         '''
-        self.filepath = [pop['output'], 'plots'] # Initialize a filepath.
+        self.filepath = [pop['output'], 'plotpop'] # Initialize a filepath.
         self.filename = filename
         
         self.figure, self.axes = None, None
@@ -70,7 +71,7 @@ class Plot():
             self.figure = plt.figure(figsize=(20, 20))
             self.axes = self.figure.add_axes([0, 0, 1, 1])
 
-    def plot(self, color=None, fontsize=20, axes=None, flip_axes=False):
+    def plot(self, color=None, fontsize={}, axes=None, flip_axes=False):
         '''
         Graphs the Plot object on the axes.
 
@@ -83,6 +84,10 @@ class Plot():
         axes : matplotlib.axes.Axes
             If plotting a subplot, this is the axes of the subplot. This parameter should not be 
             specified if not plotting a subplot.
+        fontsize : dict
+            Stores the font information. It allows variable setting of the x and y-axis font sizes,
+            as well as the title.
+
         '''
         assert self.data is not None, 'Data has not been initialized.'
         if axes is not None:
@@ -300,6 +305,11 @@ def get_diffexp_data(pop, **kwargs):
     ctrls = [s for s in pop['order'] if re.match(pop['controlstring'], s) is not None]
     diffexp_data = {}
     diffexp_data['samples'] = {}
+    
+    assert len(kwargs) < 2, 'Only one filter can be specified.'
+    for key, value in enumerate(kwargs): 
+        # Store the filter used in diffexp. If there is no filter applied, there should be no filter field.
+        diffexp_data['filter'] = (str(key), str(value))
 
     print(f'Calculating cutoff...    \r', end='')
     ctrl_l1s = np.array([])
@@ -353,6 +363,70 @@ def get_diffexp_data(pop, **kwargs):
     diffexp_data['all'] = diff_genes
     
     return diffexp_data
-      
     
+
+def save_diffexp_data(pop, diffexp_data, cluster_data=None, dirname='diffexp'):
+    '''
+    Saves a diffexp_data dictionary, created by the get_diffexp_data function, to a subdirectory of 
+    out/plotpop. The diffexp_data is organized into four files: one containing upregulated genes by sample,
+    one containing downregulated genes by sample, one storing the matrix of all L1 values, and one storing
+    all differentially-expressed genes.
+
+    Parameters
+    ----------
+    pop : dict
+        The PopAlign object.
+    diffexp_data : dict
+        The object containing all diffexp data. 
+    cluster_data : list
+        A list with nclusters sub-lists, which store the gene names by cluster (given by hmap.clusters).
+        If this argument is specified, the cluster indices are included in the 'all.csv' file. 
+    dirname : str
+        The name under which to store the diffexp_data files; pop['output'/diffexp/[DIRNAME].
+    '''
+    samples = check_samples(pop, pop['order'], filter_ctrls=True, filter_reps=True)
+    genes = pop['filtered_genes']
+
+    # Make the directory in which to store the diffexp data in the location specified
+    # by the path argument. This is the home directory by default.
+
+    loc = os.path.join(pop['output'], 'plotpop', 'diffexp', dirname)
+    PA.mkdir(loc)
+    
+    # Save the differentially-expressed genes.
+    all_loc = os.path.join(loc, 'all_csv')
+    all_df = pd.DataFrame(data={'genes':diffexp_data['all']})
+    if cluster_data: # If clustering data is included, add it to the dataframe.
+        assert len(cluster_data) == len(diffexp_data['all']), \
+                'The cluster data does not align with the number of differentially-expressed genes.'
+        all_df['cluster'] = cluster_data
+    all_df.to_csv(all_loc) # Save the dataframe.
+
+    # Save the L1 data.
+    l1_loc = os.path.join(loc, 'l1s')
+    l1_df = pd.DataFrame(data=diffexp_data['l1s'],
+                         columns=genes)
+    l1_df.insert(1, 'samples', samples) # Insert a samples column.
+    l1_df.to_csv(l1_loc) # Save the dataframe.
+
+    ngenes = len(genes)
+    down_data, up_data = {}, {}
+    # Save the up and down-regulated genes by sample.
+    for sample in samples:
+        up_loc, down_loc = os.path.join(loc, 'upregulated.csv'), os.path.join(loc, 'downregulated.csv')
+        # Pad the ends of the arrays with np.nan so the length is constant.    
+        up_arr = diffexp_data['samples'][sample]['up']
+        down_arr = diffexp_data['samples'][sample]['down']
+        up_arr = np.pad(up_arr, (0, ngenes - len(up_arr)), constant_values=np.nan)
+        down_arr = np.pad(down_arr, (0, ngenes - len(down_arr)), constant_values=np.nan)
+        
+        up_data[sample] = up_arr
+        down_data[sample] = down_arr
+    
+    up_df, down_df = pd.DataFrame(data=up_data), pd.DataFrame(data=down_data)
+    up_df.to_csv(up_loc)
+    down_df.to_csv(down_loc)
+
+    print(f'Differential expression data saved to {loc}.')
+
 

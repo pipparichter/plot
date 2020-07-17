@@ -50,6 +50,9 @@ class BarPlot(plot.Plot):
             self.celltype = plot.check_celltype(pop, kwargs.get('celltype', None))
         elif type_ == 'g_s_rp': # Distribution for a specific gene and sample, filtered by reference population.
             self.refpop = kwargs.get('refpop', None)
+            self.ref = pop['ref']
+            # Get the cell type of the reference subpopulation. 
+            self.celltype = pop['samples'][self.ref]['gmm_types'][self.refpop]
         elif type_ == 'g_s': # Distribution for all cells for a specific gene and sample.
             pass
 
@@ -200,10 +203,16 @@ class BarPlot(plot.Plot):
         color : tuple
             Colors of the control and experimental data bars, respectively. See 
             matplotlib.colors module documentation for information on possible colors. 
-        fontsize : int
-            The font size for the axes.
+        fontsize : dict
+            Stores the font information. It allows variable setting of the x and y-axis font sizes,
+            as well as the title.
         '''
         assert isinstance(color, tuple), 'Color must be a tuple for a BarPlot object.'
+        
+        # Inititalize font sizes.
+        title_fontsize = fontsize.get('title', 28)
+        # x_fontsize = fontsize.get('x', 20)
+        # y_fontsize = fontsize.get('y', 20)
 
         barwidth = 1.0 / self.nbins # Width of each bar.
         # NOTE: Remember to remove the last bin element to ensure len(self.bins) is equal to 
@@ -218,18 +227,15 @@ class BarPlot(plot.Plot):
                  align='edge') # Add experimental data.
 
         # Make the graph prettier!
-        if self.type_ == 'g_s_ct':
-            title = f'{self.gene} in {self.sample} (CT: {self.celltype})'
-        elif self.type_ == 'g_s_rp':
-            title = f'{self.gene} in {self.sample} (RP: #{self.refpop})'
-        axes.set_title(title)
+        title = f'{self.gene} in {self.sample} (self.celltype)'
+        axes.set_title(title, fontdict={'fontsize':title_fontsize})
         axes.set_xticks(np.round(self.bins, 3)[::5])
         if self.binmax != 0:
             axes.set_xlim(xmin=0, xmax=self.binmax)
         else:
             axes.set_xlim(xmin=0, xmax=2.0)    
-        axes.set_ylabel('cell fraction', fontdict={'fontsize':fontsize})
-        axes.set_xlabel('expression level', fontdict={'fontsize':fontsize})
+        axes.set_ylabel('cell fraction', fontdict={'fontsize':20})
+        axes.set_xlabel('expression level', fontdict={'fontsize':20})
         axes.set_yticks(np.arange(0, self.data.max(), 0.1))
         axes.set_ylim(ymin=0, ymax=self.data.max())
         axes.legend(labels=['CONTROL', f'{self.sample}'])

@@ -303,7 +303,7 @@ class HeatmapPlot(plot.Plot):
 
         return data, labels
 
-    def __plot_dendrogram(self, daxes):
+    def __plot_dendrogram(self, daxes, flip_axes=False):
         '''
         Plots dendrograms on the x, y, or both axes, depending on which linkage matrices have been
         calculated.
@@ -316,22 +316,26 @@ class HeatmapPlot(plot.Plot):
         xdax, ydax = daxes # Get the axes for the x and y-axis dendrograms.
         ydax.axis('off') # Turn off axes display.
         xdax.axis('off')
-        if self.lms[0] is not None: # If the x-axis was clustered...
-            lm = self.lms[0] # Retrieve the x-axis linkage matrix.
-            sch.dendrogram(lm, ax=xdax, 
+
+        if flip_axes: # If flip_axes == True, then switch the linkage matrix used to create each dendrogram.
+            xlm, ylm = self.lms[1], self.lms[0]
+        else:
+            xlm, ylm = self.lms[0], self.lms[1]
+
+        if xlm is not None: # If the x-axis was clustered...
+            sch.dendrogram(xlm, ax=xdax, 
                            orientation='top', 
                            color_threshold=0,
                            above_threshold_color='black',
                            no_labels=True)
-        if self.lms[1] is not None: # If the y-axis was clustered...
-            lm = self.lms[1] # Retrieve the y-axis linkage matrix.
-            sch.dendrogram(lm, ax=ydax, 
+        if ylm is not None: # If the y-axis was clustered...
+            sch.dendrogram(ylm, ax=ydax, 
                            orientation='left',
                            color_threshold=0,
                            above_threshold_color='black',
                            no_labels=True)
 
-    def _plotter(self, axes, color=None, fontsize=None, flip_axes=True):
+    def _plotter(self, axes, color=None, fontsize={}, flip_axes=True):
         '''
         Plots a heatmap on the inputted axes.        
         
@@ -343,11 +347,17 @@ class HeatmapPlot(plot.Plot):
             The name of the subplot to be plotted.
         color: str
             The name of a matplotlib.colors.Colormap to color the heatmap data.
-        fontsize : int
-            Size of the font on the axes labels (not the title). 
+        fontsize : dict
+            Stores the font information. It allows variable setting of the x and y-axis font sizes,
+            as well as the title.
         '''
         assert isinstance(color, str), 'Color must be a string for a HeatMap object.'
-            
+        
+        # Inititalize font sizes.
+        title_fontsize = fontsize.get('title', 28)
+        x_fontsize = fontsize.get('x', 20)
+        y_fontsize = fontsize.get('y', 20)
+
         # Retrieve the data and data labels for the subplot.
         if flip_axes:
             data = np.transpose(self.data)
@@ -357,7 +367,7 @@ class HeatmapPlot(plot.Plot):
             xlabels, ylabels = self.xlabels, self.ylabels
         
         axes.axis('off') # Turn off the axes frame.
-        axes.set_title(f'Expression in {self.celltype}', fontdict={'fontsize':28})
+        axes.set_title(f'Expression in {self.celltype}', fontdict={'fontsize':title_fontsize})
         
         # Get information for creating a layout; if the HeatmapPlot is a subplot, the layout
         # will need to be constructed relative the the larger figure.
@@ -379,7 +389,8 @@ class HeatmapPlot(plot.Plot):
             # Create axes for the x-and-y dendrograms.
             ydax = self.figure.add_axes([x0, y0, d, mainh], frame_on=False)
             xdax = self.figure.add_axes([x0 + d, y0 + mainh, mainw, d], frame_on=False)
-            self.__plot_dendrogram((xdax, ydax)) # Plot the dendrograms.
+            # Plot the dendrorgrams.
+            self.__plot_dendrogram((xdax, ydax))
         else:
             d = 0
             mainw, mainh = 0.775 * w, 0.975 * h
@@ -397,8 +408,8 @@ class HeatmapPlot(plot.Plot):
         mainax.set_xticks(np.arange(0, len(xlabels))) 
         mainax.set_yticks(np.arange(0, len(ylabels))) 
         # Set the axes labels, with the correct orientation and font size.
-        mainax.set_yticklabels(ylabels, fontdict={'fontsize':fontsize})
-        xlabels = mainax.set_xticklabels(xlabels, fontdict={'fontsize':fontsize})
+        mainax.set_yticklabels(ylabels, fontdict={'fontsize':y_fontsize})
+        xlabels = mainax.set_xticklabels(xlabels, fontdict={'fontsize':x_fontsize})
         for label in xlabels: # Make x-axis labels vertical.
             label.set_rotation('vertical')
         # If dendrograms are plotted, move the y-tick labels to make room for the dendrograms.
@@ -410,6 +421,4 @@ class HeatmapPlot(plot.Plot):
         norm = mpl.colors.Normalize(vmin=-2.0, vmax=2.0)
         mappable = mpl.cm.ScalarMappable(norm=norm, cmap=cmap) # Turn the selected colormap into a ScalarMappable object.
         cbar = plt.colorbar(mappable, cax=cax, ticks=[-2, 0, 2])
-        cbar.ax.set_title('L1 norm', fontdict={'fontsize':fontsize})
-        cbar.ax.set_yticklabels(['-2', '0', '2'], fontdict={'fontsize':fontsize})
-
+        cbar.ax.set_title('L1 norm', fontdict={'fontsize':20})
