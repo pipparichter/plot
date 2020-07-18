@@ -190,7 +190,7 @@ class BarPlot(plot.Plot):
     
     # -------------------------------------------------------------------------------------------------------
 
-    def _plotter(self, axes, color=None, fontsize=None, flip_axes=False):
+    def _plotter(self, axes, color=None, fontsize=None, **kwargs):
         '''
         Generate a single barplot for a specified gene using the inputted axes. 
         Transcript counts are plotted on the axis, and percentage of cells which 
@@ -206,6 +206,8 @@ class BarPlot(plot.Plot):
         fontsize : dict
             Stores the font information. It allows variable setting of the x and y-axis font sizes,
             as well as the title.
+        **kwargs : N/A
+            Additional plotting settings. None are currently used in BarPlots.
         '''
         assert isinstance(color, tuple), 'Color must be a tuple for a BarPlot object.'
         

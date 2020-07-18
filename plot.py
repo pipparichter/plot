@@ -71,7 +71,7 @@ class Plot():
             self.figure = plt.figure(figsize=(20, 20))
             self.axes = self.figure.add_axes([0, 0, 1, 1])
 
-    def plot(self, color=None, fontsize={}, axes=None, flip_axes=False):
+    def plot(self, color=None, fontsize={}, axes=None, **kwargs):
         '''
         Graphs the Plot object on the axes.
 
@@ -87,7 +87,8 @@ class Plot():
         fontsize : dict
             Stores the font information. It allows variable setting of the x and y-axis font sizes,
             as well as the title.
-
+        **kwargs : N/A
+            Additional plotting settings specific to the type of plot.
         '''
         assert self.data is not None, 'Data has not been initialized.'
         if axes is not None:
@@ -101,7 +102,7 @@ class Plot():
         if color is None: # If color is not specified, use the default color. 
             color = self.color
 
-        self.plotter(self.axes, color=color, fontsize=fontsize, flip_axes=flip_axes)
+        self.plotter(self.axes, color=color, fontsize=fontsize, **kwargs)
         self.plotted = True
 
     def save(self, filename=None):
@@ -286,7 +287,7 @@ def check_samples(pop, samples, filter_reps=True, filter_ctrls=True):
 
 # Differentially expressed gene selection ------------------------------------------------------------
 
-def get_diffexp_data(pop, **kwargs):
+def get_diffexp_data(pop, cutoff=None, **kwargs):
     '''
     Returns a dictionary storing information on differentially expressed genes. It stores a list of the
     up and down-regulated genes by sample, as well as an nsamples by ngenes 2-D array containing the
@@ -299,6 +300,9 @@ def get_diffexp_data(pop, **kwargs):
     ----------
     pop : dict
         The PopAlign object.
+    cutoff : float
+        Specifies the L1 cutoff to use when selecting which genes are differentially expressed. If no
+        cutoff is given, then it is calculated from the controls. 
     '''
     genes = np.array(pop['filtered_genes'])
     samples = check_samples(pop, pop['order'], filter_ctrls=True, filter_reps=True)
@@ -310,57 +314,62 @@ def get_diffexp_data(pop, **kwargs):
     for key, value in enumerate(kwargs): 
         # Store the filter used in diffexp. If there is no filter applied, there should be no filter field.
         diffexp_data['filter'] = (str(key), str(value))
-
-    print(f'Calculating cutoff...    \r', end='')
-    ctrl_l1s = np.array([])
-    for ctrl in ctrls:
-        # Turn off merge_samples when evaluating the controls. 
-        for gene in genes:
-            l1 = barplot.calculate_l1(pop, gene, ctrl, **kwargs)
-            ctrl_l1s = np.append(ctrl_l1s, l1)
-    distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
-    cutoff = abs(distribution.ppf(0.001)) # Sometimes this value is negative, so take the absolute value.
-    print(f'Cutoff is {cutoff}.    ')
+    
+    if cutoff is None: # If no cutoff is specified, calculate it from controls. 
+        print(f'Calculating cutoff...    \r', end='')
+        ctrl_l1s = np.array([])
+        for ctrl in ctrls:
+            # Turn off merge_samples when evaluating the controls. 
+            for gene in genes:
+                l1 = barplot.calculate_l1(pop, gene, ctrl, **kwargs)
+                ctrl_l1s = np.append(ctrl_l1s, l1)
+        distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
+        cutoff = abs(distribution.ppf(0.001)) # Sometimes this value is negative, so take the absolute value.
+        print(f'Cutoff is {cutoff}.    ')
     
     t0 = time.time()
-    diff_genes, diff_l1s = np.array([]), np.array([]) 
+    all_upreg, all_downreg = np.array([]), np.array([])
+    # NOTE: all_l1 samples are in order pop['order'] and genes are in order pop['filtered_genes'].
     all_l1s = np.zeros((len(samples), len(genes))) # A 2-D array to store the L1 values.
     for i in range(len(samples)):
         print(f'Gathering differential expression data for sample {i} of {len(samples)}...    \r', end='')
         sample = samples[i]
-
-        l1s = np.array([])
-        for gene in genes:
-            l1 = barplot.calculate_l1(pop, gene, sample, **kwargs)
-            l1s = np.append(l1s, l1)
-        all_l1s[i] = l1s
         
-        downidxs = np.where(l1s < -1 * cutoff)[0]
-        upidxs = np.where(l1s > cutoff)[0]
+        l1s = np.array([])
+        for gene in genes: # Store the up and down-regulated genes and their corresponding L1 values. 
+            l1 = barplot.calculate_l1(pop, gene, sample, **kwargs)
+            l1s = np.append(l1s, l1) # Add the L1 value to the sample L1 list.
+        all_l1s[i] = l1s # Add the sample L1 values to the matrix. 
 
+        # Get the indices for differentially up and down-regulated genes/L1 values.
+        up_idxs = np.where(l1s >= cutoff)
+        down_idxs = np.where(l1s < -1 * cutoff)
+        # Get the indices with which to sort the genes by order of increasing L1 value.
+        up_l1s, down_l1s = l1s[up_idxs], l1s[down_idxs] # Get L1 arrays.
+        up_genes, down_genes = np.array(genes)[up_idxs], np.array(genes)[down_idxs] # Get corresponding gene names.
+        up_sort, down_sort = np.argsort(up_l1s), np.argsort(down_l1s) # Get sorting indices.
+
+        # Sort the gene lists and add them to the main arrays. 
+        all_upreg = np.append(all_upreg, up_genes[up_sort])
+        all_downreg = np.append(all_downreg, down_genes[down_sort])
+        
+        # Add the data to the diffexp_data dictionary under the relevant sample. 
         diffexp_data['samples'][sample] = {}
-        diffexp_data['samples'][sample]['up'] = genes[upidxs]
-        diffexp_data['samples'][sample]['down'] = genes[downidxs]
+        diffexp_data['samples'][sample]['up'] = up_genes
+        diffexp_data['samples'][sample]['down'] = down_genes
 
-        # Add the new up and down-regulated genes to array of differentially-expressed genes.
-        # Also add the corresponding L1 values for the given sample, making sure the order of the 
-        # two arrays corresponds.
-        diff_genes = np.concatenate((diff_genes, genes[upidxs], genes[downidxs]))
-        diff_l1s = np.concatenate((diff_l1s, l1s[upidxs], l1s[downidxs])) 
+    # Concatenate the up and down-regulated genes to array of differentially-expressed genes.
+    all_ = np.concatenate((all_upreg, all_downreg))
+    # NOTE: Make sure to preserve the order of diff_genes when removing duplicates (np.unique()) will 
+    # automatically sort the array, so account for that).
+    _, order = np.unique(all_, return_index=True)
+    all_ = all_[np.sort(order)]
 
     t1 = time.time()
     print(f'All differential expression data gathered: {int(t1 - t0)} seconds.    ')
     
-    idxs = np.argsort(diff_l1s) # Get the sorting indices to order by L1 value.
-    diff_genes = diff_genes[idxs] # Order diff_genes by L1 value.
-    
-    # Make sure to preserve the order of diff_genes when removing duplicates (np.unique()) will 
-    # automatically sort the array, so account for that).
-    _, order = np.unique(diff_genes, return_index=True)
-    diff_genes = diff_genes[np.sort(order)]
-
     diffexp_data['l1s'] = all_l1s # Store the calculated L1 values.
-    diffexp_data['all'] = diff_genes
+    diffexp_data['all'] = all_
     
     return diffexp_data
     

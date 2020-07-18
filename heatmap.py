@@ -43,10 +43,9 @@ class HeatmapPlot(plot.Plot):
         # Initialize dictionary of genes and their corresponding indices.
         self.genedict = {gene:pop['filtered_genes'].index(gene) for gene in pop['filtered_genes']}
         self.allgenes = np.array(pop['filtered_genes'])
-        self.samples = plot.check_samples(pop, 
-                                          samples=np.array(pop['order']), 
-                                          filter_reps=self.merge_samples, 
-                                          filter_ctrls=True)
+        # Inititalize the samples attribute; if sample list is specified, use pop['order'].
+        samples = np.array(kwargs.get('samples', pop['order']))
+        self.samples = plot.check_samples(pop, samples=samples, filter_reps=self.merge_samples, filter_ctrls=True)
         
         # Parent class initialization --------------------------------------------------------
         super().__init__(pop, is_subplot=is_subplot) 
@@ -102,6 +101,15 @@ class HeatmapPlot(plot.Plot):
     
     def __load_diffexp_data(self, diffexp_data):
         '''
+        Load relevant data from a diffexp_data object into the HeatmapPlot. It stores all differentially 
+        up and down-regulated genes (in any sample), as well as the stairstep-order list of differentially
+        expressed genes and the 2-D pop['order'] by pop['filtered_genes'] array of L1 values. 
+        
+        Parameters
+        ----------
+        diffexp_data : dict
+            An object produced by the plot.get_diffexp_data() function which stores information
+            about differentially-expressed genes. 
         '''
         diffexp = None
         upreg, downreg = np.array([]), np.array([])
@@ -136,7 +144,7 @@ class HeatmapPlot(plot.Plot):
         unsupervised : bool
             Whether :or not genes should be selected by an unsupervised algorithm.
         '''
-        if unsupervised: # If analysis is unsupervised, get the cutoff.
+        if unsupervised: 
             if self.all_l1s is None: # Check to see if diffexp_data has already been loaded.
                 if self.type_ == 'ct':
                     diffexp_data = plot.get_diffexp_data(self.pop, celltype=self.celltype)
@@ -202,7 +210,9 @@ class HeatmapPlot(plot.Plot):
         # NOTE: The L1 data is in the order of pop['filtered_genes'], so we must use the indices
         # stored in self.genedict to pull out the correct data.
         geneidxs = np.array([self.genedict[gene] for gene in self.genes])
-        sampleidx = np.where(self.samples == sample)[0] # Get the index of the sample.
+        # NOTE: The L1 data is in the order of pop['order'], so we must use the indices from that to 
+        # pull out the correct data.
+        sampleidx = np.where(np.array(self.pop['order']) == sample)[0] # Get the index of the sample.
         l1s = self.all_l1s[sampleidx, geneidxs] # Filter by gene indices.
 
         return l1s
@@ -335,7 +345,7 @@ class HeatmapPlot(plot.Plot):
                            above_threshold_color='black',
                            no_labels=True)
 
-    def _plotter(self, axes, color=None, fontsize={}, flip_axes=True):
+    def _plotter(self, axes, color=None, fontsize={}, **kwargs):
         '''
         Plots a heatmap on the inputted axes.        
         
@@ -350,8 +360,14 @@ class HeatmapPlot(plot.Plot):
         fontsize : dict
             Stores the font information. It allows variable setting of the x and y-axis font sizes,
             as well as the title.
+        **kwargs : N/A
+            Other HeatmapPlot-specific plotting settings. More information can be found in the documentation.
         '''
         assert isinstance(color, str), 'Color must be a string for a HeatMap object.'
+
+        # Get plot settings.
+        flip_axes = kwargs.get('flip_axes', True) # Default to flip axes.
+        cutoff = kwargs.get('cutoff', None) # Default to no filtering of L1 values.
         
         # Inititalize font sizes.
         title_fontsize = fontsize.get('title', 28)
@@ -365,6 +381,10 @@ class HeatmapPlot(plot.Plot):
         else:
             data = self.data
             xlabels, ylabels = self.xlabels, self.ylabels
+
+        if cutoff is not None: # If a filter is set, set all values below the cutoff to zero.
+            # Set all values outside of the cutoff 'zone' to zero. 
+            data = np.where(data > -1 * cutoff and data < cutoff, 0.0, data)
         
         axes.axis('off') # Turn off the axes frame.
         axes.set_title(f'Expression in {self.celltype}', fontdict={'fontsize':title_fontsize})
