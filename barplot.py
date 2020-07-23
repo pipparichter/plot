@@ -1,6 +1,7 @@
 import numpy as np
 from matplotlib import colors
 import popalign as PA
+import re
 
 from plotpop import plot
 from plotpop.plot import get_ncells
@@ -8,7 +9,8 @@ from plotpop.plot import get_ncells
 class BarPlot(plot.Plot):
     '''
     '''
-    def __init__(self, pop,
+    def __init__(self, 
+                 pop=None,
                  type_=None,
                  nbins=25,
                  is_subplot=False, 
@@ -27,11 +29,16 @@ class BarPlot(plot.Plot):
         is_subplot : bool
             Whether or not the plot is a subplot.
         '''
+        assert pop is not None, 'A pop object must be specified for a BarPlot.'
+        self.pop = pop
+        
         # Parent class inititalization ------------------------------------------------------      
         super().__init__(pop, is_subplot=is_subplot)
         # Set the plotting function and default colors.
         self.plotter = self._plotter
         self.color = ('lightsalmon', 'turquoise')
+
+        self.ctrls = [s for s in pop['samples'].keys() if re.match(pop['controlstring'], s) is not None]
 
         # Type-specific initialization ------------------------------------------------------
         options = ['g_s_ct', 'g_s_rp', 'g_s']
@@ -41,7 +48,7 @@ class BarPlot(plot.Plot):
         self.gene = plot.check_gene(pop, kwargs.get('gene', None))
         self.sample = plot.check_sample(pop, kwargs.get('sample', None))
         self.geneidx = pop['filtered_genes'].index(self.gene)
-        
+            
         self.merge_samples = kwargs.get('merge_samples', True)
         if self.sample in self.ctrls: # Make sure merge_samples is off if the sample is a control.
             self.merge_samples = False
@@ -111,8 +118,10 @@ class BarPlot(plot.Plot):
         idxs = idx_getter(self.sample)
         ncells = len(idxs)
         arr = self.pop['samples'][self.sample]['M_norm'].toarray()[self.geneidx][idxs]
-        if self.merge_samples: # If merge_samples, combine the data from the *_rep sample.
-            rep = self.sample + '_rep'
+        
+        rep = self.sample + '_rep'
+        # If sample merging is turned on AND a replicate is present, merge the *_rep and sample data. 
+        if self.merge_samples and rep in self.pop['order']: 
             rep_idxs = idx_getter(rep) 
             arr = np.append(arr, self.pop['samples'][rep]['M_norm'].toarray()[self.geneidx][rep_idxs])
             ncells += len(rep_idxs) # Add the number of cells in the replicate sample to the total cell countself.

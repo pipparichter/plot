@@ -16,5 +16,5 @@ or subpopulation). If no keyword argument is specified, no filter is applied.
 ## Calculating the L1 cutoff
 
 The first step in unsupervised gene selection is approximating a cutoff. This is done by iterating over each control sample
-(i.e. each sample matching the `pop['controlstring']`) For each gene in `pop['filtered_genes']`, an L1 norm is 
-calculated
+(i.e. each sample matching the `pop['controlstring']`) For each control sample and each gene in `pop['filtered_genes']`, 
+an L1 norm is calculated. A normalized probability

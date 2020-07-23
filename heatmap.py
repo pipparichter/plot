@@ -1,4 +1,5 @@
 import matplotlib as mpl
+import re
 import matplotlib.pyplot as plt
 import numpy as np
 import sklearn as skl
@@ -16,9 +17,14 @@ class HeatmapPlot(plot.Plot):
     '''
 
     '''
-    def __init__(self, pop, 
+    def __init__(self, 
+                 pop=None,
+                 diffexp_data=None,
                  type_=None,
                  is_subplot=False,
+                 merge_samples=True,
+                 genes=None, 
+                 samples=None,
                  cluster=True, 
                  **kwargs):
         '''
@@ -28,30 +34,43 @@ class HeatmapPlot(plot.Plot):
         ----------
         pop : dict
             The pop object.
+        diffexp_data : dict
+            The object storing information on differential expression. 
         type_ : str
             One of 'ct', rp'. This specifies what will be plotted on the Heatmap.
         is_subplot : bool
             Whether or not the heatmap is a subplot.
+        genes : list
+            A list of genes to plot on the HeatmapPlot. This must be specified if the plot is initialized
+            with a pop obect. If initialized with diffexp_data, this defaults to the list of differentially-
+            expressed genes (diffexp_data['diffexp']['all'].
+        samples : list
+            A list of samples to plot on the HeatmapPlot. This is optional. It allows the user to manually
+            adjust sample ordering or exclude samples from the analysis. 
         cluster : bool
             Whether or not to cluster the data. Clustering options can be specified in cluster_params.
         kwargs : N/A
             A series of keyword arguments, details of which are specified in the documentation. 
         '''
+        options = ['ct', 'rp']
+        assert type_ in options, f'The type_ parameter must be one of: {options}.'
+        self.type_ = type_
            
-        self.merge_samples = kwargs.get('merge_samples', True)
-        
-        # Initialize dictionary of genes and their corresponding indices.
-        self.genedict = {gene:pop['filtered_genes'].index(gene) for gene in pop['filtered_genes']}
-        self.allgenes = np.array(pop['filtered_genes'])
-        # Inititalize the samples attribute; if sample list is specified, use pop['order'].
-        samples = np.array(kwargs.get('samples', pop['order']))
-        self.samples = plot.check_samples(pop, samples=samples, filter_reps=self.merge_samples, filter_ctrls=True)
+        self.merge_samples = merge_samples
         
         # Parent class initialization --------------------------------------------------------
-        super().__init__(pop, is_subplot=is_subplot) 
+        assert not (diffexp_data and pop), 'Only one of pop, diffexp_data may be given.'
+        if diffexp_data is not None:
+            obj = diffexp_data
+        elif pop is not None:
+            obj = pop
+        else:
+            raise Exception('At least one of pop, diffexp_data must be specified.')
+
+        super().__init__(obj, is_subplot=is_subplot) 
         self.plotter = self._plotter
         self.color = 'bwr'
-        
+
         # Clustering -----------------------------------------------------------------------
         self.cluster_ = cluster 
         self.cluster_plot_dendrograms = kwargs.get('cluster_plot_dendrograms', True)
@@ -63,38 +82,65 @@ class HeatmapPlot(plot.Plot):
         self.clusters = {} # A dictionary in which to store the cluster groups. 
         self.lms = [None, None] # A list which will store the linkage matrices.
         
-        # Differential expression ----------------------------------------------------------
-        diffexp_data = kwargs.get('diffexp_data', None)
-        self.diffexp, self.upreg, self.downreg, self.all_l1s = self.__load_diffexp_data(diffexp_data)
-        self.genes = self.diffexp # If diffexp_data was not None, self.genes is now a list of genes.
+        # Initialization with diffexp_data ----------------------------------------------------------        
+        if diffexp_data is not None:
+            # NOTE: All checks on the samples and genes were carried out in the get_diffexp_data()
+            # method in the plot module.
+            self.gene_order = diffexp_data['genes'] # The gene order for obtaining corresponding gene indices. 
+            if genes is None:
+                self.genes = diffexp_data['diffexp']['all'] 
+            else:
+                self.genes = genes
+            # Inititalize the samples attribute; if no sample list is specified, use diffexp['samples'].
+            if samples is None:
+                self.samples = np.array(diffexp_data['samples'])
+            else:
+                self.samples = samples
 
-        # Type-specific initialization ------------------------------------------------------
-        options = ['ct', 'rp']
-        assert type_ in options, f'The type_ parameter must be one of: {options}.'
-        self.type_ = type_
+            # This function initializes the following attributes: diffexp, upreg, downreg, all_l1s. 
+            self.__load_diffexp_data(diffexp_data)
+            
+            # Check that the inputted diffexp data is compatible with the plot type.
+            fltr = diffexp_data['filter'][0]
+            if self.type_ == 'ct':
+                assert fltr == 'celltype', \
+                        f'diffexp_data with filter {fltr} is incompatible with HeatmapPlot type ct.'
+                self.celltype = diffexp_data['filter'][1]
+            elif self.type_ == 'rp':
+                assert fltr == 'refpop', \
+                        f'diffexp_data with filter {fltr} is incompatible with HeatmapPlot type rp.'
+                self.refpop = diffexp_data['filter'][1]
         
-        # If genes are specified in the arguments, assign them to self.genes. If not, keep it as is.
-        # NOTE: This means that genes specified directly will override diffexp genes.
-        self.genes = kwargs.get('genes', self.genes)
-        if type_ == 'ct': # Samples filtered by a celltype.
-            self.celltype = plot.check_celltype(pop, kwargs.get('celltype', None))
-        
-        elif type_ == 'rp': # Samples filtered by a reference population.
-            self.refpop = kwargs.get('refpop', None)
-            self.ref = pop['ref'] # Store the name of the reference sample.
-            self.celltype = pop['samples'][self.ref]['gmm_types'][self.refpop] # Get the type of the subpopulation.
-       
-        # If a gene list was specified, assign it to self.genes attribute. If not, keep the previous assignment
-        # (either None or diffexp from diffexp_data). 
-        self.genes = plot.check_genes(pop, kwargs.get('genes', self.genes))
+            unsupervised = True # Gene selection was carried out using an unsupervised algorithm.
+            
+        # Standard initialization ------------------------------------------------------
+        elif pop is not None:
+            self.pop = pop # Store the pop object as an attribute.
+            self.ctrls = [s for s in pop['samples'].keys() if re.match(pop['controlstring'], s) is not None]
+            
+            assert genes is not None, 'A genes list must be specified when initializing with a pop object.'
+            self.genes = plot.check_genes(pop, genes)            
+            # Inititalize the samples attribute; if no sample list is specified, use pop['order'].
+            if samples is None:
+                samples = np.array(pop['order'])
+            self.samples = plot.check_samples(pop, samples=samples, filter_reps=merge_samples, filter_ctrls=True)
+            # If genes are specified in the arguments, assign them to self.genes. 
 
+            if self.type_ == 'ct': # Samples filtered by a celltype.
+                self.celltype = plot.check_celltype(pop, kwargs.get('celltype', None))
+            elif self.type_ == 'rp': # Samples filtered by a reference population.
+                self.refpop = kwargs.get('refpop', None)
+                self.ref = pop['ref'] # Store the name of the reference sample.
+                self.celltype = pop['samples'][self.ref]['gmm_types'][self.refpop] # Get the type of the subpopulation.
+            
+            unsupervised = False # A curated list of genes, and no precomputed L1 matrix, are being used.
+
+        # Data collection ------------------------------------------------------------------------
         self.ylabels = self.samples
-        self.xlabels = None # This will be assigned in the get_data function.
-        if self.genes is None: # If no genes are given, proceed with unsupervised gene selection.
-            self.data = self.__s_get_data(unsupervised=True)
-        else: # If genes are specified, use those genes. 
-            self.data = self.__s_get_data(unsupervised=False)
-       
+        self.xlabels = self.genes 
+        # Gather data without either using the precomputed diffexp object or with a pop object.
+        self.data = self.__s_get_data(unsupervised=unsupervised)
+        
         # Adjusting the filepath -------------------------------------------------------------
         self.filepath.append('heatmap') # Assign plot to 'heatmap' directory.
         self.filename = f'heatmap.png'
@@ -111,24 +157,21 @@ class HeatmapPlot(plot.Plot):
             An object produced by the plot.get_diffexp_data() function which stores information
             about differentially-expressed genes. 
         '''
-        diffexp = None
         upreg, downreg = np.array([]), np.array([])
-        all_l1s = None
-
-        if diffexp_data is not None:
-            diffexp = diffexp_data['all']
-            # Get lists of all genes differentially up or down-regulated in any sample.
-            for sample in self.samples:
-                upreg = np.append(upreg, diffexp_data['samples'][sample]['up'])
-                downreg = np.append(downreg, diffexp_data['samples'][sample]['down'])
+        # Get lists of all genes differentially up or down-regulated in any sample.
+        for sample in self.samples:
+            upreg = np.append(upreg, diffexp_data['diffexp']['samples'][sample]['up'])
+            downreg = np.append(downreg, diffexp_data['diffexp']['samples'][sample]['down'])
         
-            # Remove duplicates.
-            upreg = np.unique(upreg)
-            downreg = np.unique(downreg)
-
-            all_l1s = diffexp_data['l1s']
-
-        return diffexp, upreg, downreg, all_l1s
+        # Remove duplicates.
+        upreg = np.unique(upreg)
+        downreg = np.unique(downreg)
+        
+        # Inititalize the attributes.
+        self.diffexp = diffexp_data['diffexp']['all']
+        self.upreg = upreg
+        self.downreg = downreg
+        self.all_l1s = diffexp_data['l1s']
 
     # S_* ------------------------------------------------------------------------------------------------ 
     
@@ -145,16 +188,7 @@ class HeatmapPlot(plot.Plot):
             Whether :or not genes should be selected by an unsupervised algorithm.
         '''
         if unsupervised: 
-            if self.all_l1s is None: # Check to see if diffexp_data has already been loaded.
-                if self.type_ == 'ct':
-                    diffexp_data = plot.get_diffexp_data(self.pop, celltype=self.celltype)
-                elif self.type_ == 'rp':
-                    diffexp_data = plot.get_diffexp_data(self.pop, refpop=self.refpop)
-            
-                self.diffexp, self.upreg, self.downreg, self.all_l1s = self.__load_diffexp_data(diffexp_data)
-                self.genes = self.diffexp # Set self.genes equal to the differentially-expressed genes.
             data_getter = self.__get_sample_data_unsupervised
-        
         else: # If a list of genes has been specified... 
             data_getter = self.__get_sample_data
         
@@ -206,16 +240,23 @@ class HeatmapPlot(plot.Plot):
     
     def __get_sample_data_unsupervised(self, sample=None):
         '''
+        This function uses the precomputed data in the inputted diffexp_data dictionary to retrieve data
+        for the given sample. 
+
+        Parameters
+        ----------
+        sample : str
+            The sample for which to gather the data. 
         '''
-        # NOTE: The L1 data is in the order of pop['filtered_genes'], so we must use the indices
-        # stored in self.genedict to pull out the correct data.
-        geneidxs = np.array([self.genedict[gene] for gene in self.genes])
+        # NOTE: The L1 data is in the order of diffexp_data['genes'], so we must use that to get the
+        # correct indices.
+        geneidxs = np.array([np.where(self.gene_order == gene)[0] for gene in self.genes])
         # NOTE: The L1 data is in the order of pop['order'], so we must use the indices from that to 
         # pull out the correct data.
-        sampleidx = np.where(np.array(self.pop['order']) == sample)[0] # Get the index of the sample.
+        sampleidx = np.where(np.array(self.samples == sample))[0] # Get the index of the sample.
         l1s = self.all_l1s[sampleidx, geneidxs] # Filter by gene indices.
-
-        return l1s
+        
+        return l1s.flatten()
 
     # Clustering ------------------------------------------------------------------------------------
     
@@ -383,8 +424,8 @@ class HeatmapPlot(plot.Plot):
             xlabels, ylabels = self.xlabels, self.ylabels
 
         if cutoff is not None: # If a filter is set, set all values below the cutoff to zero.
-            # Set all values outside of the cutoff 'zone' to zero. 
-            data = np.where(data > -1 * cutoff and data < cutoff, 0.0, data)
+            # Set all values within the cutoff 'zone' to zero.
+            data = np.where((data < cutoff) & (data > -1 * cutoff), 0.0, data)
         
         axes.axis('off') # Turn off the axes frame.
         axes.set_title(f'Expression in {self.celltype}', fontdict={'fontsize':title_fontsize})
