@@ -11,7 +11,7 @@ sys.path.insert(0, './popalign/popalign')
 import popalign as PA
 
 from plotpop import plot
-from plotpop import barplot
+from plotpop import bar
 
 class HeatmapPlot(plot.Plot):
     '''
@@ -87,6 +87,7 @@ class HeatmapPlot(plot.Plot):
             # NOTE: All checks on the samples and genes were carried out in the get_diffexp_data()
             # method in the plot module.
             self.gene_order = diffexp_data['genes'] # The gene order for obtaining corresponding gene indices. 
+            self.samples_order = diffexp_data['samples'] # The sample order for obtaining corresponding sample indices.
             if genes is None:
                 self.genes = diffexp_data['diffexp']['all'] 
             else:
@@ -204,7 +205,7 @@ class HeatmapPlot(plot.Plot):
         print(f'All sample data gathered: {int(t1 - t0)} seconds    ')
         
         self.xlabels = self.genes # Set the ylabels BEFORE clustering.
-        if self.cluster: # If clustering is set to True...
+        if self.cluster_: # If clustering is set to True...
             data = self.cluster(data=data)     
         
         return data
@@ -232,8 +233,8 @@ class HeatmapPlot(plot.Plot):
         l1s = np.array([])
         for gene in genes:
             bar_params.update({'gene':gene, 'sample':sample, 'merge_samples':True})
-            bar = barplot.BarPlot(self.pop, type_=bar_type, **bar_params)    
-            l1 = bar.calculate_l1() # Get the L1 metric for the distribution (reference is control by default).
+            bp = bar.BarPlot(self.pop, type_=bar_type, **bar_params)    
+            l1 = bp.calculate_l1() # Get the L1 metric for the distribution (reference is control by default).
             l1s = np.append(l1s, l1) # Add the L1 value.
 
         return l1s
@@ -253,7 +254,7 @@ class HeatmapPlot(plot.Plot):
         geneidxs = np.array([np.where(self.gene_order == gene)[0] for gene in self.genes])
         # NOTE: The L1 data is in the order of pop['order'], so we must use the indices from that to 
         # pull out the correct data.
-        sampleidx = np.where(np.array(self.samples == sample))[0] # Get the index of the sample.
+        sampleidx = np.where(np.array(self.samples_order == sample))[0] # Get the index of the sample.
         l1s = self.all_l1s[sampleidx, geneidxs] # Filter by gene indices.
         
         return l1s.flatten()
@@ -288,7 +289,6 @@ class HeatmapPlot(plot.Plot):
             # Change the axes labels stored in the object to match the new ordering.
             self.xlabels = xlabels
             self.ylabels = ylabels
-
 
         self.data = data # Reassign the data attribute.
         return data # Return data just cause.
@@ -335,7 +335,7 @@ class HeatmapPlot(plot.Plot):
         self.clusters[axis] = []
         for cluster in range(nclusters): # Store the clusters in an attribute.
             idxs = np.where(clusteridxs == cluster)[0]
-            self.clusters[axis].append(labels[idxs])
+            self.clusters[axis].append(np.array(labels)[idxs])
    
         labels = labels[sorter] # Sort the labels to match the data.
         if axis == 'y':

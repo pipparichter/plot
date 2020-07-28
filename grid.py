@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 
 import popalign as PA
-from plotpop import barplot
+from plotpop import bar
 from plotpop import heatmap
 from plotpop.plot import Plot
 
@@ -34,7 +34,7 @@ class Grid(Plot):
     
         self.figure, self.axes = None, None # These attributes will store the figure and axes objects.
      
-        classes = {'heatmap':heatmap.HeatmapPlot, 'barplot':barplot.BarPlot}
+        classes = {'heatmap':heatmap.HeatmapPlot, 'bar':bar.BarPlot}
         self.class_ = classes[class_]
 
         for x in var[1]:

@@ -4,7 +4,7 @@ import os
 import re
 import scipy
 import time 
-from plotpop import barplot
+from plotpop import bar
 # import sklearn as skl
 import pandas as pd
 import sys
@@ -246,7 +246,7 @@ def merge_genes(pops):
         merged = merged[np.in1d(merged, genes)] # Filter merged by the indices of the elements also in genes. 
         merged = check_genes(pop, merged.tolist()) # Check the merged list against the pop object.
     
-    print('The following genes were removed in the merge: ' + ', '.join(removed))
+    # print('The following genes were removed in the merge: ' + ', '.join(removed))
 
     return merged 
 
@@ -309,9 +309,81 @@ def check_samples(pop, samples, filter_reps=True, filter_ctrls=True):
 
 # Differentially expressed gene selection ------------------------------------------------------------
 
+def get_samples_with_pop(pops, samples=None):
+    '''
+    Generates a list of tuples where the first tuple element is an integer corresponding to a pop object,
+    and the second tuple element is a string corresponding to the name of a sample in that pop object.
+    This is just a way to associate samples with a specific pop object to clean up the get_diffexp_data()
+    function.
+
+    Parameters
+    ----------
+    pops : list
+        A list of PopAlign objects.
+    samples : list
+        A list of strings specifying sample names. If a sample order is specified, then the sample names must be in 
+        the format {SAMPLE NAME}_{EXPERIMENT NAME}, e.g. 'ALL CYTO_COVID1'.
+    '''
+    samples_with_pop = [] # This will store a list of samples 
+    
+    if samples is None: # If no sample order is specified, a pop['order'] is used as default.
+        for idx in range(len(pops)):
+            for sample in pops[idx]['order']: # Iterate through the samples in pop['order'].
+                samples_with_pop.append((idx, sample))
+    
+    else: # If a sample order is specified... 
+        try:
+            pop_names = [pop['name'] for pop in pops]
+        except:
+            raise Exception('Each pop object must have a name.')
+        for named_sample in samples:
+            # NOTE: This does not guarantee the naming scheme is correct, but does catch some cases. 
+            assert '_' in named_sample, 'The sample naming scheme is incorrect.'
+            s = named_sample.split('_')
+            name = s[-1] # Get the sample name.
+            try:
+                idx = pop_names.index(name)
+                sample = '_'.join(s[:-1]) # Recreate the sample name. 
+                samples_with_pop.append((idx, sample)) # Store the sample name with the corresponding pop object in a list. 
+            except ValueError:
+                raise Exception(f'No experiment matching {name} was found in the list of pop objects.')
+
+    return samples_with_pop
+
+
+def get_cutoff(pop, genes, **kwargs):
+    '''
+    Calculates the L1 cutoff for a specified PopAlign object from the controls. This is for use within the 
+    get_diffexp_data() function.
+
+    Parameters
+    ----------
+    pop : dict
+        The PopAlign object.
+    genes : list
+        A list of genes for which to calculate the cutoff. This is necessary because the list of genes may not
+        be the same as pop['genes'] if multiple pop objects are inputted to get_diffexp_data().
+    **kwargs : N/A
+        The 'filter', i.e. a specific celltype or reference population number.
+    '''
+    ctrls = [s for s in pop['order'] if re.match(pop['controlstring'], s) is not None]
+    print(f'Calculating cutoff...    \r', end='')
+    ctrl_l1s = []
+    for ctrl in ctrls:
+        # Turn off merge_samples when evaluating the controls. 
+        for gene in genes:
+            l1 = bar.calculate_l1(pop, gene, ctrl, **kwargs)
+            ctrl_l1s.append(l1)
+    distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
+    cutoff = abs(distribution.ppf(0.001)) # Sometimes this value is negative, so take the absolute value.
+    print(f'Cutoff is {cutoff}.    ')
+    
+    return cutoff
+
+
 # NOTE: This function probably will not work with a refpop filter, as it assumes reference populations
 # are aligned across experiments. Later, I will fix this (ask Sisi how to address this issue!). 
-def get_diffexp_data(pops, output=None, cutoff=None, **kwargs):
+def get_diffexp_data(pops, samples=None, output=None, cutoff=None, **kwargs):
     '''
     Returns a dictionary storing information on differentially expressed genes. It stores a list of the
     up and down-regulated genes by sample, as well as an nsamples by ngenes 2-D array containing the
@@ -322,20 +394,27 @@ def get_diffexp_data(pops, output=None, cutoff=None, **kwargs):
 
     Parameters
     ----------
-    pop : dict, list
+    pops : dict, list
         The PopAlign object, or a list of PopAlign objects to merge.
+    samples : list
+        If specified
     cutoff : float
         Specifies the L1 cutoff to use when selecting which genes are differentially expressed. If no
         cutoff is given, then it is calculated from the controls. 
     '''
-    data = {'diffexp':{'samples':{}}}
+
+    data = {'diffexp':{'samples':{}}} # Initialize a diffexp_data object. 
+
     if isinstance(pops, dict): # If pops is a single pop object, make it a list that can be iterated over.
         pops = [pops]
+    
+    samples_with_pop = get_samples_with_pop(pops, samples=samples) # Get the samples with their associated pop object.
     
     data['output'] = output
     assert output is not None, 'An output directory must be specified'
 
-    genes = merge_genes(pops) # Get the intersection of the genes in each pop input.
+    # NOTE: A lot of genes seem to be removed in this step... check with Sisi to make sure this is OK.
+    genes = merge_genes(pops) # Get the intersection of the genes in each pop input. This avoids errors later on.
     data['genes'] = genes # Store the iteration order of the genes. 
     data['samples'] = np.array([])
 
@@ -346,64 +425,76 @@ def get_diffexp_data(pops, output=None, cutoff=None, **kwargs):
     elif 'refpop' in kwargs:
         data['filter'] = ('refpop', str(kwargs.get('refpop')))
  
-    # Inititalize arrays to store data.
-    # NOTE: all_l1 samples are in order pop['order'] and genes are in order pop['filtered_genes'].
-    all_l1s, all_upreg, all_downreg = [], np.array([]), np.array([])
-    # NOTE: Here's the reason I made all_l1s a list and not an array:
-    # https://stackoverflow.com/questions/22392497/how-to-add-a-new-row-to-an-empty-numpy-array
-    t0 = time.time()
-    for pop in pops:
-        # Initialize the list of samples and controls. 
-        samples = check_samples(pop, pop['order'], filter_ctrls=True, filter_reps=True)
-        data['samples'] = np.append(data['samples'], samples) # Append the pop samples to the list of samples. 
-        ctrls = [s for s in pop['order'] if re.match(pop['controlstring'], s) is not None]
-  
-        if cutoff is None: # If no cutoff is specified, calculate it from controls. 
-            print(f'Calculating cutoff...    \r', end='')
-            ctrl_l1s = []
-            for ctrl in ctrls:
-                # Turn off merge_samples when evaluating the controls. 
-                for gene in genes:
-                    l1 = barplot.calculate_l1(pop, gene, ctrl, **kwargs)
-                    ctrl_l1s.append(l1)
-            distribution = scipy.stats.rv_histogram(np.histogram(ctrl_l1s, bins=100))
-            cutoff = abs(distribution.ppf(0.001)) # Sometimes this value is negative, so take the absolute value.
-            print(f'Cutoff is {cutoff}.    ')
-        
-        for i in range(len(samples)):
-            print(f'Gathering differential expression data for sample {i} of {len(samples)}...    \r', end='')
-            sample = samples[i]
-            
-            sample_l1s = []
-            for gene in genes: # Store the up and down-regulated genes and their corresponding L1 values. 
-                l1 = barplot.calculate_l1(pop, gene, sample, **kwargs)
-                sample_l1s.append(l1) # Add the L1 value to 
-            all_l1s.append(sample_l1s) # Add the sample L1 values to the matrix. 
+    if len(pops) > 1: # If pop objects are being merged, give the samples unique names. 
+        try:
+            names = [f"_{pop['name']}" for pop in pops]
+        except: # If no names are given in the pop obejects, assign them numbers.
+            names = [f'_{i}' for i in range(len(pops))]
+    else: # If there is only one pop object, nothing needs to be appended to the sample names.
+        names = [''] # The list is for consistency.
 
-            sample_l1s = np.array(sample_l1s) # Convert the list of sample L1 values to a numpy array. 
-            # Get the indices for differentially up and down-regulated genes/L1 values.
-            up_idxs = np.where(sample_l1s >= cutoff)
-            down_idxs = np.where(sample_l1s <= -1 * cutoff)
-            # Get the indices with which to sort the genes by order of increasing L1 value.
-            up_l1s, down_l1s = sample_l1s[up_idxs], sample_l1s[down_idxs] # Get L1 arrays.
-            up_genes, down_genes = np.array(genes)[up_idxs], np.array(genes)[down_idxs] # Get corresponding gene names.
-            up_sort, down_sort = np.argsort(up_l1s), np.argsort(down_l1s) # Get sorting indices.
-            # Sort the gene lists and add them to the main arrays. 
-            all_upreg = np.append(all_upreg, up_genes[up_sort])
-            all_downreg = np.append(all_downreg, down_genes[down_sort])
-            
-            # Add the data to the diffexp_data dictionary under the relevant sample. 
-            data['diffexp']['samples'][sample] = {}
-            data['diffexp']['samples'][sample]['up'] = up_genes
-            data['diffexp']['samples'][sample]['down'] = down_genes
+    # Inititalize arrays to store data.
+    all_l1s, all_upreg, all_downreg = [], np.array([]), np.array([])
+    t0 = time.time()
+    count = 1 # Count for keeping track of what sample we're on.
+    for idx, sample in samples_with_pop:
+
+        pop = pops[idx] # Get the pop object corresponding to the index
+        name = names[idx] # Get the name of the experiment loaded to the selected pop object.
         
+        # Add the sample name (with the experiment name) to the list of samples.
+        named_sample = f'{sample}{name}'
+        data['samples'] = np.append(data['samples'], named_sample) # Append the pop samples to the list of samples. 
+        
+        if cutoff is None: # If no cutoff is specified, calculate it from controls. 
+            cutoff = get_cutoff(pop, genes, kwargs)
+       
+        print(f'Gathering differential expression data for sample {count} of {len(samples_with_pop)}...    \r', end='')
+            
+        sample_l1s = []
+        for gene in genes: # Store the up and down-regulated genes and their corresponding L1 values. 
+            l1 = bar.calculate_l1(pop, gene, sample, **kwargs)
+            sample_l1s.append(l1) # Add the L1 value to the list of sample L1s. 
+        all_l1s.append(sample_l1s) # Add the sample L1 values to the matrix. 
+
+        sample_l1s = np.array(sample_l1s) # Convert the list of sample L1 values to a numpy array. 
+        # Get the indices for differentially up and down-regulated genes/L1 values.
+        up_idxs = np.where(sample_l1s >= cutoff)
+        down_idxs = np.where(sample_l1s <= -1 * cutoff)
+        # Get the indices with which to sort the genes by order of increasing L1 value.
+        up_l1s, down_l1s = sample_l1s[up_idxs], sample_l1s[down_idxs] # Get L1 arrays.
+        up_genes, down_genes = np.array(genes)[up_idxs], np.array(genes)[down_idxs] # Get corresponding gene names.
+        up_sort, down_sort = np.argsort(up_l1s), np.argsort(down_l1s) # Get sorting indices.
+        # Sort the gene lists and add them to the main arrays. 
+        # all_upreg = np.append(all_upreg, up_genes[up_sort])
+        # all_downreg = np.append(all_downreg, down_genes[down_sort])
+        for gene in up_genes[up_sort].tolist():
+            if np.count_nonzero(all_upreg == gene) == 0:
+                all_upreg = np.append(all_upreg, gene)
+        for gene in down_genes[down_sort].tolist():
+            if np.count_nonzero(all_downreg == gene) == 0:
+                all_downreg = np.append(all_downreg, gene)
+        
+        # Add the data to the diffexp_data dictionary under the relevant sample. 
+        # Make sure to use the named sample!
+        data['diffexp']['samples'][named_sample] = {}
+        data['diffexp']['samples'][named_sample]['up'] = up_genes
+        data['diffexp']['samples'][named_sample]['down'] = down_genes
+        
+        count += 1 # Increment the count by one.
+
     # Concatenate the up and down-regulated genes to array of differentially-expressed genes.
-    diffexp = np.concatenate((all_upreg, all_downreg))
+    # diffexp = np.concatenate((all_upreg, all_downreg))
     # NOTE: Make sure to preserve the order of diff_genes when removing duplicates (np.unique()) will 
     # automatically sort the array, so account for that).
-    _, order = np.unique(diffexp, return_index=True)
-    diffexp = diffexp[np.sort(order)]
-
+    # _, order = np.unique(diffexp, return_index=True)
+    # diffexp = diffexp[np.sort(order)]
+    
+    diffexp = np.array([])
+    for gene in np.concatenate((all_upreg, all_downreg)).tolist():
+        if np.count_nonzero(diffexp == gene) == 0:
+            diffexp = np.append(diffexp, gene)
+ 
     t1 = time.time()
     print(f'All differential expression data gathered: {int(t1 - t0)} seconds.    ')
     
@@ -411,7 +502,7 @@ def get_diffexp_data(pops, output=None, cutoff=None, **kwargs):
     data['diffexp']['all'] = diffexp
     
     return data
-    
+   
 
 def save_diffexp_data(diffexp_data, cluster_data=None, dirname='diffexp'):
     '''
@@ -442,7 +533,7 @@ def save_diffexp_data(diffexp_data, cluster_data=None, dirname='diffexp'):
     all_loc = os.path.join(loc, 'all_csv')
     all_df = pd.DataFrame(data={'genes':diffexp_data['diffexp']['all']})
     if cluster_data: # If clustering data is included, add it to the dataframe.
-        assert len(cluster_data) == len(diffexp_data['all']), \
+        assert len(cluster_data) == len(diffexp_data['diffexp']['all']), \
                 'The cluster data does not align with the number of differentially-expressed genes.'
         all_df['cluster'] = cluster_data
     all_df.to_csv(all_loc) # Save the dataframe.
@@ -460,8 +551,8 @@ def save_diffexp_data(diffexp_data, cluster_data=None, dirname='diffexp'):
     for sample in samples:
         up_loc, down_loc = os.path.join(loc, 'upregulated.csv'), os.path.join(loc, 'downregulated.csv')
         # Pad the ends of the arrays with np.nan so the length is constant.    
-        up_arr = diffexp_data['samples'][sample]['up']
-        down_arr = diffexp_data['samples'][sample]['down']
+        up_arr = diffexp_data['diffexp']['samples'][sample]['up']
+        down_arr = diffexp_data['diffexp']['samples'][sample]['down']
         up_arr = np.pad(up_arr, (0, ngenes - len(up_arr)), constant_values=np.nan)
         down_arr = np.pad(down_arr, (0, ngenes - len(down_arr)), constant_values=np.nan)
         
