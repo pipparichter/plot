@@ -309,12 +309,48 @@ def check_samples(pop, samples, filter_reps=True, filter_ctrls=True):
 
 # Differentially expressed gene selection ------------------------------------------------------------
 
-def get_samples_with_pop(pops, samples=None):
+def get_named_samples(pops, order=[]):
+    '''
+    Takes in a list of pop objects and returns a list of sampled with pop['name'] appended.
+    If an ordering is specified, the rearranged sample list is returned. 
+
+    Parameters
+    ----------
+    pops : list
+        A list of PopAlign objects.
+    order : list
+        A list of strings which match with samples to specify an order.
+    '''
+    try:
+        names = [pop['name'] for pop in pops] # Get a list of the experiment names.
+    except KeyError:
+        raise Exception('A name must be assigned to each experiment.')
+
+    named_samples = np.array([])
+    for i in range(len(pops)):
+        pop, name = pops[i], names[i]
+        # Check and filter sample names. 
+        samples = check_samples(pop, pop['order'], filter_reps=True, filter_ctrls=True)
+        for sample in samples:
+            named_sample = f'{sample}_{name}' # Combine the experiment and sample names. 
+            named_samples = np.append(named_samples, named_sample)
+
+    ordered_named_samples = np.array([])
+    for elem in order:
+        matches = np.array([s for s in named_samples if re.match(elem, s) is not None]) # Get the samples which match the string.
+        ordered_named_samples = np.append(ordered_named_samples, matches) # Add the matches to named_samples.
+        named_samples = np.delete(named_samples, np.in1d(named_samples, matches)) # Remove all matches in named_samples.
+    ordered_named_samples = np.append(ordered_named_samples, named_samples) # Add any remaining named samples to the final list.
+    
+    return ordered_named_samples
+
+
+def get_samples_with_pop(pops, named_samples=None):
     '''
     Generates a list of tuples where the first tuple element is an integer corresponding to a pop object,
-    and the second tuple element is a string corresponding to the name of a sample in that pop object.
-    This is just a way to associate samples with a specific pop object to clean up the get_diffexp_data()
-    function.
+    and the second tuple element is a string corresponding to the name of a sample in that pop object. 
+    (i.e. not including the experiment name). This is just a way to associate samples with a specific 
+    pop object to clean up the get_diffexp_data() function.
 
     Parameters
     ----------
@@ -324,29 +360,25 @@ def get_samples_with_pop(pops, samples=None):
         A list of strings specifying sample names. If a sample order is specified, then the sample names must be in 
         the format {SAMPLE NAME}_{EXPERIMENT NAME}, e.g. 'ALL CYTO_COVID1'.
     '''
-    samples_with_pop = [] # This will store a list of samples 
+    assert named_samples is not None, 'A list of named samples must be specified.'
+
+    samples_with_pop = [] # This will store a list of (pop, sample) tuples. 
+    try:
+        pop_names = [pop['name'] for pop in pops]
+    except:
+        raise Exception('Each pop object must have a name.')
     
-    if samples is None: # If no sample order is specified, a pop['order'] is used as default.
-        for idx in range(len(pops)):
-            for sample in pops[idx]['order']: # Iterate through the samples in pop['order'].
-                samples_with_pop.append((idx, sample))
-    
-    else: # If a sample order is specified... 
+    for named_sample in named_samples:
+        # NOTE: This does not guarantee the naming scheme is correct, but does catch some cases. 
+        assert '_' in named_sample, 'The sample naming scheme is incorrect.'
+        s = named_sample.split('_')
+        name = s[-1] # Get the experiment name.
         try:
-            pop_names = [pop['name'] for pop in pops]
-        except:
-            raise Exception('Each pop object must have a name.')
-        for named_sample in samples:
-            # NOTE: This does not guarantee the naming scheme is correct, but does catch some cases. 
-            assert '_' in named_sample, 'The sample naming scheme is incorrect.'
-            s = named_sample.split('_')
-            name = s[-1] # Get the sample name.
-            try:
-                idx = pop_names.index(name)
-                sample = '_'.join(s[:-1]) # Recreate the sample name. 
-                samples_with_pop.append((idx, sample)) # Store the sample name with the corresponding pop object in a list. 
-            except ValueError:
-                raise Exception(f'No experiment matching {name} was found in the list of pop objects.')
+            idx = pop_names.index(name)
+            sample = '_'.join(s[:-1]) # Recreate the sample name without the experiment name. 
+            samples_with_pop.append((idx, sample)) # Store the sample name with the corresponding pop object in a list. 
+        except ValueError:
+            raise Exception(f'No experiment matching {name} was found in the list of pop objects.')
 
     return samples_with_pop
 
@@ -383,7 +415,7 @@ def get_cutoff(pop, genes, **kwargs):
 
 # NOTE: This function probably will not work with a refpop filter, as it assumes reference populations
 # are aligned across experiments. Later, I will fix this (ask Sisi how to address this issue!). 
-def get_diffexp_data(pops, samples=None, output=None, cutoff=None, **kwargs):
+def get_diffexp_data(pops, sample_order=[], output=None, cutoff=None, **kwargs):
     '''
     Returns a dictionary storing information on differentially expressed genes. It stores a list of the
     up and down-regulated genes by sample, as well as an nsamples by ngenes 2-D array containing the
@@ -396,8 +428,8 @@ def get_diffexp_data(pops, samples=None, output=None, cutoff=None, **kwargs):
     ----------
     pops : dict, list
         The PopAlign object, or a list of PopAlign objects to merge.
-    samples : list
-        If specified
+    sample_order : list
+        A list passed into get_named_samples() to specify a sample order. 
     cutoff : float
         Specifies the L1 cutoff to use when selecting which genes are differentially expressed. If no
         cutoff is given, then it is calculated from the controls. 
@@ -407,45 +439,32 @@ def get_diffexp_data(pops, samples=None, output=None, cutoff=None, **kwargs):
 
     if isinstance(pops, dict): # If pops is a single pop object, make it a list that can be iterated over.
         pops = [pops]
-    
-    samples_with_pop = get_samples_with_pop(pops, samples=samples) # Get the samples with their associated pop object.
-    
-    data['output'] = output
-    assert output is not None, 'An output directory must be specified'
-
-    # NOTE: A lot of genes seem to be removed in this step... check with Sisi to make sure this is OK.
-    genes = merge_genes(pops) # Get the intersection of the genes in each pop input. This avoids errors later on.
-    data['genes'] = genes # Store the iteration order of the genes. 
-    data['samples'] = np.array([])
-
+ 
     assert len(kwargs) < 2, 'Only one filter can be specified.'
     # Store the filter used in diffexp. If there is no filter applied, there should be no filter field.
     if 'celltype' in kwargs:
         data['filter'] = ('celltype', kwargs.get('celltype'))
     elif 'refpop' in kwargs:
         data['filter'] = ('refpop', str(kwargs.get('refpop')))
- 
-    if len(pops) > 1: # If pop objects are being merged, give the samples unique names. 
-        try:
-            names = [f"_{pop['name']}" for pop in pops]
-        except: # If no names are given in the pop obejects, assign them numbers.
-            names = [f'_{i}' for i in range(len(pops))]
-    else: # If there is only one pop object, nothing needs to be appended to the sample names.
-        names = [''] # The list is for consistency.
+    
+    data['output'] = output
+    assert output is not None, 'An output directory must be specified'
+  
+    named_samples = get_named_samples(pops, order=sample_order)
+    data['samples'] = named_samples # Store the named sample list.
+    samples_with_pop = get_samples_with_pop(pops, named_samples=named_samples) # Get the samples with their associated pop object.
+    
+    # NOTE: A lot of genes seem to be removed in this step... check with Sisi to make sure this is OK.
+    genes = merge_genes(pops) # Get the intersection of the genes in each pop input. This avoids errors later on.
+    data['genes'] = genes # Store the iteration order of the genes. 
 
     # Inititalize arrays to store data.
     all_l1s, all_upreg, all_downreg = [], np.array([]), np.array([])
     t0 = time.time()
     count = 1 # Count for keeping track of what sample we're on.
     for idx, sample in samples_with_pop:
-
-        pop = pops[idx] # Get the pop object corresponding to the index
-        name = names[idx] # Get the name of the experiment loaded to the selected pop object.
-        
-        # Add the sample name (with the experiment name) to the list of samples.
-        named_sample = f'{sample}{name}'
-        data['samples'] = np.append(data['samples'], named_sample) # Append the pop samples to the list of samples. 
-        
+        pop = pops[idx] # Get the pop object corresponding to the index.
+    
         if cutoff is None: # If no cutoff is specified, calculate it from controls. 
             cutoff = get_cutoff(pop, genes, kwargs)
        
@@ -465,9 +484,7 @@ def get_diffexp_data(pops, samples=None, output=None, cutoff=None, **kwargs):
         up_l1s, down_l1s = sample_l1s[up_idxs], sample_l1s[down_idxs] # Get L1 arrays.
         up_genes, down_genes = np.array(genes)[up_idxs], np.array(genes)[down_idxs] # Get corresponding gene names.
         up_sort, down_sort = np.argsort(up_l1s), np.argsort(down_l1s) # Get sorting indices.
-        # Sort the gene lists and add them to the main arrays. 
-        # all_upreg = np.append(all_upreg, up_genes[up_sort])
-        # all_downreg = np.append(all_downreg, down_genes[down_sort])
+       
         for gene in up_genes[up_sort].tolist():
             if np.count_nonzero(all_upreg == gene) == 0:
                 all_upreg = np.append(all_upreg, gene)
@@ -477,19 +494,13 @@ def get_diffexp_data(pops, samples=None, output=None, cutoff=None, **kwargs):
         
         # Add the data to the diffexp_data dictionary under the relevant sample. 
         # Make sure to use the named sample!
+        named_sample = f"{sample}_{pop['name']}"
         data['diffexp']['samples'][named_sample] = {}
         data['diffexp']['samples'][named_sample]['up'] = up_genes
         data['diffexp']['samples'][named_sample]['down'] = down_genes
         
         count += 1 # Increment the count by one.
 
-    # Concatenate the up and down-regulated genes to array of differentially-expressed genes.
-    # diffexp = np.concatenate((all_upreg, all_downreg))
-    # NOTE: Make sure to preserve the order of diff_genes when removing duplicates (np.unique()) will 
-    # automatically sort the array, so account for that).
-    # _, order = np.unique(diffexp, return_index=True)
-    # diffexp = diffexp[np.sort(order)]
-    
     diffexp = np.array([])
     for gene in np.concatenate((all_upreg, all_downreg)).tolist():
         if np.count_nonzero(diffexp == gene) == 0:
