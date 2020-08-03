@@ -69,8 +69,8 @@ class HeatmapPlot(plot.Plot):
 
         super().__init__(obj, is_subplot=is_subplot) 
         self.plotter = self._plotter
-        self.color = 'bwr'
-
+        self.color = 'coolwarm'
+ 
         # Clustering -----------------------------------------------------------------------
         self.cluster_ = cluster 
         self.cluster_plot_dendrograms = kwargs.get('cluster_plot_dendrograms', True)
@@ -136,9 +136,13 @@ class HeatmapPlot(plot.Plot):
             
             unsupervised = False # A curated list of genes, and no precomputed L1 matrix, are being used.
 
-        # Data collection ------------------------------------------------------------------------
+        # Parent class initialization (continued) ----------------------------------------------------------
+        # NOTE: These need to be set following the type-specific initialization for HeatmapPlots.
         self.ylabels = self.samples
         self.xlabels = self.genes 
+        self.title = f'Expression in {self.celltype}'
+
+        # Data collection ------------------------------------------------------------------------
         # Gather data without either using the precomputed diffexp object or with a pop object.
         self.data = self.__s_get_data(unsupervised=unsupervised)
         
@@ -386,7 +390,11 @@ class HeatmapPlot(plot.Plot):
                            above_threshold_color='black',
                            no_labels=True)
 
-    def _plotter(self, axes, color=None, fontsize={}, **kwargs):
+    def _plotter(self, axes, 
+                 color=None, 
+                 cutoff=None,
+                 flip_axes=True,
+                 **kwargs):
         '''
         Plots a heatmap on the inputted axes.        
         
@@ -398,22 +406,10 @@ class HeatmapPlot(plot.Plot):
             The name of the subplot to be plotted.
         color: str
             The name of a matplotlib.colors.Colormap to color the heatmap data.
-        fontsize : dict
-            Stores the font information. It allows variable setting of the x and y-axis font sizes,
-            as well as the title.
         **kwargs : N/A
             Other HeatmapPlot-specific plotting settings. More information can be found in the documentation.
         '''
         assert isinstance(color, str), 'Color must be a string for a HeatMap object.'
-
-        # Get plot settings.
-        flip_axes = kwargs.get('flip_axes', True) # Default to flip axes.
-        cutoff = kwargs.get('cutoff', None) # Default to no filtering of L1 values.
-        
-        # Inititalize font sizes.
-        title_fontsize = fontsize.get('title', 28)
-        x_fontsize = fontsize.get('x', 20)
-        y_fontsize = fontsize.get('y', 20)
 
         # Retrieve the data and data labels for the subplot.
         if flip_axes:
@@ -428,7 +424,6 @@ class HeatmapPlot(plot.Plot):
             data = np.where((data < cutoff) & (data > -1 * cutoff), 0.0, data)
         
         axes.axis('off') # Turn off the axes frame.
-        axes.set_title(f'Expression in {self.celltype}', fontdict={'fontsize':title_fontsize})
         
         # Get information for creating a layout; if the HeatmapPlot is a subplot, the layout
         # will need to be constructed relative the the larger figure.
@@ -469,8 +464,8 @@ class HeatmapPlot(plot.Plot):
         mainax.set_xticks(np.arange(0, len(xlabels))) 
         mainax.set_yticks(np.arange(0, len(ylabels))) 
         # Set the axes labels, with the correct orientation and font size.
-        mainax.set_yticklabels(ylabels, fontdict={'fontsize':y_fontsize})
-        xlabels = mainax.set_xticklabels(xlabels, fontdict={'fontsize':x_fontsize})
+        mainax.set_yticklabels(ylabels, fontdict={'fontsize':self.y_fontsize})
+        xlabels = mainax.set_xticklabels(xlabels, fontdict={'fontsize':self.x_fontsize})
         for label in xlabels: # Make x-axis labels vertical.
             label.set_rotation('vertical')
         # If dendrograms are plotted, move the y-tick labels to make room for the dendrograms.

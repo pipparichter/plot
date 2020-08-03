@@ -32,27 +32,29 @@ class BarPlot(plot.Plot):
         assert pop is not None, 'A pop object must be specified for a BarPlot.'
         self.pop = pop
         
+        self.gene = plot.check_gene(pop, kwargs.get('gene', None))
+        self.sample = plot.check_sample(pop, kwargs.get('sample', None))
+        self.geneidx = pop['filtered_genes'].index(self.gene)
+                   
+        self.merge_samples = kwargs.get('merge_samples', True)
+        if self.sample in self.ctrls: # Make sure merge_samples is off if the sample is a control.
+            self.merge_samples = False
+
         # Parent class inititalization ------------------------------------------------------      
         super().__init__(pop, is_subplot=is_subplot)
         # Set the plotting function and default colors.
         self.plotter = self._plotter
         self.color = ('lightsalmon', 'turquoise')
-
+        self.title = f'{self.gene} in {self.sample} (self.celltype)'
+        self.xtitle = 'expression level'
+        self.ytitle = 'cell fraction'
+ 
         self.ctrls = [s for s in pop['samples'].keys() if re.match(pop['controlstring'], s) is not None]
-
+      
         # Type-specific initialization ------------------------------------------------------
         options = ['g_s_ct', 'g_s_rp', 'g_s']
         assert type_ in options, f'The type_ parameter must be one of: {options}.'
-        self.type_ = type_
         
-        self.gene = plot.check_gene(pop, kwargs.get('gene', None))
-        self.sample = plot.check_sample(pop, kwargs.get('sample', None))
-        self.geneidx = pop['filtered_genes'].index(self.gene)
-            
-        self.merge_samples = kwargs.get('merge_samples', True)
-        if self.sample in self.ctrls: # Make sure merge_samples is off if the sample is a control.
-            self.merge_samples = False
-
         if type_ == 'g_s_ct': # Distribution for a specific gene and sample, filtered by celltype.
             self.celltype = plot.check_celltype(pop, kwargs.get('celltype', None))
         elif type_ == 'g_s_rp': # Distribution for a specific gene and sample, filtered by reference population.
@@ -199,7 +201,7 @@ class BarPlot(plot.Plot):
     
     # -------------------------------------------------------------------------------------------------------
 
-    def _plotter(self, axes, color=None, fontsize=None, **kwargs):
+    def _plotter(self, axes, color=None, **kwargs):
         '''
         Generate a single barplot for a specified gene using the inputted axes. 
         Transcript counts are plotted on the axis, and percentage of cells which 
@@ -212,19 +214,11 @@ class BarPlot(plot.Plot):
         color : tuple
             Colors of the control and experimental data bars, respectively. See 
             matplotlib.colors module documentation for information on possible colors. 
-        fontsize : dict
-            Stores the font information. It allows variable setting of the x and y-axis font sizes,
-            as well as the title.
         **kwargs : N/A
             Additional plotting settings. None are currently used in BarPlots.
         '''
         assert isinstance(color, tuple), 'Color must be a tuple for a BarPlot object.'
-        
-        # Inititalize font sizes.
-        title_fontsize = fontsize.get('title', 28)
-        # x_fontsize = fontsize.get('x', 20)
-        # y_fontsize = fontsize.get('y', 20)
-
+            
         barwidth = 1.0 / self.nbins # Width of each bar.
         # NOTE: Remember to remove the last bin element to ensure len(self.bins) is equal to 
         # len(self.data[sample]).
@@ -236,21 +230,19 @@ class BarPlot(plot.Plot):
                  color=colors.to_rgba(color[1], alpha=0.5), 
                  width=barwidth,
                  align='edge') # Add experimental data.
-
+        
         # Make the graph prettier!
-        title = f'{self.gene} in {self.sample} (self.celltype)'
-        axes.set_title(title, fontdict={'fontsize':title_fontsize})
+        axes.set_yticks(np.arange(0, self.data.max(), 0.1))
         axes.set_xticks(np.round(self.bins, 3)[::5])
+        axes.set_ylim(ymin=0, ymax=self.data.max())
+        axes.legend(labels=['CONTROL', f'{self.sample}'])
         if self.binmax != 0:
             axes.set_xlim(xmin=0, xmax=self.binmax)
         else:
             axes.set_xlim(xmin=0, xmax=2.0)    
-        axes.set_ylabel('cell fraction', fontdict={'fontsize':20})
-        axes.set_xlabel('expression level', fontdict={'fontsize':20})
-        axes.set_yticks(np.arange(0, self.data.max(), 0.1))
-        axes.set_ylim(ymin=0, ymax=self.data.max())
-        axes.legend(labels=['CONTROL', f'{self.sample}'])
-   
+        axes.set_xlabel(self.xtitle)
+        axes.set_ylabel(self.ytitle)
+
     def calculate_l1(self, ref=None):
         '''
         Calculates the L1 error metric and returns it.

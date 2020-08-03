@@ -44,6 +44,13 @@ class Plot():
 
         self.plotted = False # Once self.plot() has been called once, this becomes True.
         self.plotter = None # The plotting function, which will be initialized in a derived class initializer.
+        
+        # Plot features which will be set in the derived-class initializer.
+        self.title = ''
+        self.ytitle = ''
+        self.xtitle = ''
+        self.xlabels = []
+        self.ylabels = []
 
         self.data = None # This will store the data for the Plot; format varies by subclass.
 
@@ -66,7 +73,12 @@ class Plot():
             self.figure = plt.figure(figsize=(20, 20))
             self.axes = self.figure.add_axes([0, 0, 1, 1])
 
-    def plot(self, color=None, fontsize={}, axes=None, **kwargs):
+    def plot(self, 
+             color=None, 
+             title=None, 
+             fontsize={}, 
+             axes=None, 
+             **kwargs):
         '''
         Graphs the Plot object on the axes.
 
@@ -74,8 +86,10 @@ class Plot():
         ----------
         plotter : function
             The function to use to plot the data.
-        color : variable
+        color : N/A
             The color data for the plotter function. The format of this data varies by subclass.
+        title : str
+            The title of the plot. If None, the default title is used.
         axes : matplotlib.axes.Axes
             If plotting a subplot, this is the axes of the subplot. This parameter should not be 
             specified if not plotting a subplot.
@@ -97,7 +111,16 @@ class Plot():
         if color is None: # If color is not specified, use the default color. 
             color = self.color
 
-        self.plotter(self.axes, color=color, fontsize=fontsize, **kwargs)
+        if title is None:
+            title = self.title # If no title is specified, use the default title.
+        # Inititalize font sizes.
+        title_fontsize = fontsize.get('title', 28)
+        self.x_fontsize = fontsize.get('x', 20)
+        self.y_fontsize = fontsize.get('y', 20)
+        # Set the title.
+        axes.set_title(title, fontdict={'fontsize':title_fontsize})
+
+        self.plotter(self.axes, color=color, **kwargs)
         self.plotted = True
 
     def save(self, filename=None):
@@ -412,10 +435,60 @@ def get_cutoff(pop, genes, **kwargs):
     
     return cutoff
 
+def get_l1_data(pops, sample_order=[], output=None, **kwargs):
+    '''
+    Returns a dictionary which contains a 2-D samples-by-genes numpy array storing the L1 data for a pop
+    object or a collection of pop objects.
+    '''
+    data = dict({})
+
+    if isinstance(pops, dict): # If pops is a single pop object, make it a list that can be iterated over.
+        pops = [pops]
+    
+    assert len(kwargs) < 2, 'Only one filter can be specified.'
+    # Store the filter used in diffexp. If there is no filter applied, there should be no filter field.
+    if 'celltype' in kwargs:
+        data['filter'] = ('celltype', kwargs.get('celltype'))
+    elif 'refpop' in kwargs:
+        data['filter'] = ('refpop', str(kwargs.get('refpop')))
+    
+    data['output'] = output
+    assert output is not None, 'An output directory must be specified'
+  
+    named_samples = get_named_samples(pops, order=sample_order)
+    data['samples'] = named_samples # Store the named sample list.
+    samples_with_pop = get_samples_with_pop(pops, named_samples=named_samples) # Get the samples with their associated pop object.
+    data['samples_with_pop'] = samples_with_pop
+    # NOTE: A lot of genes seem to be removed in this step... check with Sisi to make sure this is OK.
+    genes = merge_genes(pops) # Get the intersection of the genes in each pop input. This avoids errors later on.
+    data['genes'] = genes # Store the iteration order of the genes. 
+
+    # Inititalize arrays to store data.
+    all_l1s = []
+    t0 = time.time()
+    count = 1 # Count for keeping track of what sample we're on.
+    for idx, sample in samples_with_pop:
+        print(f'Gathering L1 data for sample {count} of {len(samples_with_pop)}...    \r', end='')
+        
+        pop = pops[idx] # Get the pop object corresponding to the index.    
+        sample_l1s = []
+        for gene in genes: # Store the up and down-regulated genes and their corresponding L1 values. 
+            l1 = bar.calculate_l1(pop, gene, sample, **kwargs)
+            sample_l1s.append(l1) # Add the L1 value to the list of sample L1s. 
+        all_l1s.append(sample_l1s) # Add the sample L1 values to the matrix. 
+        count += 1 # Increment the count by one.
+    
+    t1 = time.time()
+    print(f'All L1 data gathered: {int(t1 - t0)} seconds.    ')
+    
+    data['l1s'] = np.array(all_l1s) # Store the calculated L1 values after converting to an array.
+    
+    return data
+ 
 
 # NOTE: This function probably will not work with a refpop filter, as it assumes reference populations
 # are aligned across experiments. Later, I will fix this (ask Sisi how to address this issue!). 
-def get_diffexp_data(pops, sample_order=[], output=None, cutoff=None, **kwargs):
+def get_diffexp_data(pops, sample_order=[], output=None, cutoff=None, l1_data=None, **kwargs):
     '''
     Returns a dictionary storing information on differentially expressed genes. It stores a list of the
     up and down-regulated genes by sample, as well as an nsamples by ngenes 2-D array containing the
@@ -430,59 +503,41 @@ def get_diffexp_data(pops, sample_order=[], output=None, cutoff=None, **kwargs):
         The PopAlign object, or a list of PopAlign objects to merge.
     sample_order : list
         A list passed into get_named_samples() to specify a sample order. 
+    output : str
+        The output directory.
     cutoff : float
         Specifies the L1 cutoff to use when selecting which genes are differentially expressed. If no
         cutoff is given, then it is calculated from the controls. 
+    l1_data : dict
+        An l1_data object produced by the get_l1_data() function. 
     '''
 
     data = {'diffexp':{'samples':{}}} # Initialize a diffexp_data object. 
 
-    if isinstance(pops, dict): # If pops is a single pop object, make it a list that can be iterated over.
-        pops = [pops]
- 
-    assert len(kwargs) < 2, 'Only one filter can be specified.'
-    # Store the filter used in diffexp. If there is no filter applied, there should be no filter field.
-    if 'celltype' in kwargs:
-        data['filter'] = ('celltype', kwargs.get('celltype'))
-    elif 'refpop' in kwargs:
-        data['filter'] = ('refpop', str(kwargs.get('refpop')))
+    if l1_data is None:
+        l1_data = get_l1_data(pops, sample_order=sample_order, output=output, **kwargs)
+    data.update(l1_data) # Add all the info stored in l1_data to the data dictionary.
     
-    data['output'] = output
-    assert output is not None, 'An output directory must be specified'
-  
-    named_samples = get_named_samples(pops, order=sample_order)
-    data['samples'] = named_samples # Store the named sample list.
-    samples_with_pop = get_samples_with_pop(pops, named_samples=named_samples) # Get the samples with their associated pop object.
-    
-    # NOTE: A lot of genes seem to be removed in this step... check with Sisi to make sure this is OK.
-    genes = merge_genes(pops) # Get the intersection of the genes in each pop input. This avoids errors later on.
-    data['genes'] = genes # Store the iteration order of the genes. 
-
     # Inititalize arrays to store data.
     all_l1s, all_upreg, all_downreg = [], np.array([]), np.array([])
     t0 = time.time()
     count = 1 # Count for keeping track of what sample we're on.
-    for idx, sample in samples_with_pop:
+    for idx, sample in l1_data['samples_with_pop']:
+        print(f"Gathering differential expression data for sample {count} of {l1_data['samples']}...    \r", end='')
+        
         pop = pops[idx] # Get the pop object corresponding to the index.
-    
+        named_sample = f"{sample}_{pop['name']}"
+        sample_idx = np.where(l1_data['samples'] == named_sample)[0] # Get the index of the sample.
+        sample_l1s = l1_data['l1s'][sample_idx].flatten() # The rows are samples, and the columns are genes. 
+        
         if cutoff is None: # If no cutoff is specified, calculate it from controls. 
-            cutoff = get_cutoff(pop, genes, kwargs)
-       
-        print(f'Gathering differential expression data for sample {count} of {len(samples_with_pop)}...    \r', end='')
-            
-        sample_l1s = []
-        for gene in genes: # Store the up and down-regulated genes and their corresponding L1 values. 
-            l1 = bar.calculate_l1(pop, gene, sample, **kwargs)
-            sample_l1s.append(l1) # Add the L1 value to the list of sample L1s. 
-        all_l1s.append(sample_l1s) # Add the sample L1 values to the matrix. 
-
-        sample_l1s = np.array(sample_l1s) # Convert the list of sample L1 values to a numpy array. 
-        # Get the indices for differentially up and down-regulated genes/L1 values.
+            cutoff = get_cutoff(pop, l1_data['genes'], **kwargs)
+           
         up_idxs = np.where(sample_l1s >= cutoff)
         down_idxs = np.where(sample_l1s <= -1 * cutoff)
         # Get the indices with which to sort the genes by order of increasing L1 value.
         up_l1s, down_l1s = sample_l1s[up_idxs], sample_l1s[down_idxs] # Get L1 arrays.
-        up_genes, down_genes = np.array(genes)[up_idxs], np.array(genes)[down_idxs] # Get corresponding gene names.
+        up_genes, down_genes = l1_data['genes'][up_idxs], l1_data['genes'][down_idxs] # Get corresponding gene names.
         up_sort, down_sort = np.argsort(up_l1s), np.argsort(down_l1s) # Get sorting indices.
        
         for gene in up_genes[up_sort].tolist():
@@ -494,7 +549,6 @@ def get_diffexp_data(pops, sample_order=[], output=None, cutoff=None, **kwargs):
         
         # Add the data to the diffexp_data dictionary under the relevant sample. 
         # Make sure to use the named sample!
-        named_sample = f"{sample}_{pop['name']}"
         data['diffexp']['samples'][named_sample] = {}
         data['diffexp']['samples'][named_sample]['up'] = up_genes
         data['diffexp']['samples'][named_sample]['down'] = down_genes

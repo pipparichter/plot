@@ -1,4 +1,4 @@
-import plot
+from plotpop import plot
 import popalign as PA
 import numpy as np
 import os
@@ -12,23 +12,33 @@ class GSEAPlot(plot.Plot):
     def __init__(self, # Should I include an option to initialize with a pop object?
                  diffexp_data=None,
                  is_subplot=False,
-                 geneset_file=None,
-                 nstd=2):
+                 geneset_file='c5bp'):
         '''
         Inititalizes a GSEA plot object.
+        
+        Parameters
+        ----------
+        diffexp_data : dict
+
+        is_subplot : bool
+
+        geneset_file : str
 
         '''
         # Parent class initialization ------------------------------
-        super().__init__(diffexp_data, is_supbplot=is_subplot)
+        super().__init__(diffexp_data, is_subplot=is_subplot)
+        self.plotter = self._plotter
+        self.color= {'heatmap':'viridis', 'barplot':'turquoise'} # Initialize the default colors.
 
         # Inititalization -------------------------------------------------------------
-        self.genesets = PA.load_dict(os.path.join('.', f'gsea/{geneset_file}.npy'))
+        currpath = os.path.abspath(os.path.dirname(__file__)) # Get the filepath of this file.
+        self.genesets = PA.load_dict(os.path.join(currpath, f'gsea/{geneset_file}.npy'))
         self.geneset_names = np.array(list(self.genesets.keys())) # A list of geneset names. 
         
         self.diffexp_data = diffexp_data
         self.allgenes = diffexp_data['genes']
         self.samples = diffexp_data['samples']
-        self.genelists = self.diffexp_data['diffexp'] # The dictionary storing the differentially-expressed genes per sample.
+        self.genelists = self.diffexp_data['diffexp']['samples'] # The dictionary storing the differentially-expressed genes by sample.
 
         # Get the information for creating a hypergeometric distribution. 
         # NOTE: Variable naming conventions used are consistent with those in scipy.hypergeom.
@@ -47,7 +57,8 @@ class GSEAPlot(plot.Plot):
         '''
         data = {}
         for sample in self.samples:
-            genelist = np.array(self.genelists[sample])  # Get the expression data for the ith feature. 
+            up_and_down = self.genelists[sample]  # Get the up and down-regulated genes.
+            genelist = np.concatenate((up_and_down['up'], up_and_down['down']))
             data[sample] = self.__get_sample_data(genelist)
         
         return data
@@ -77,7 +88,7 @@ class GSEAPlot(plot.Plot):
             p_value = scipy.stats.hypergeom.sf(k, self.M, n, N) # Calculate the p-value.
             p_values = np.append(p_values, p_value)
         # Add the top genesets for the sample to the top_genesets list.
-        top = genelist[np.argsort(p_values)][:5]
+        top = self.geneset_names[np.argsort(p_values)][:2]
         self.top_genesets = np.append(self.top_genesets, top)
         self.top_genesets = np.unique(self.top_genesets) # Remove any duplicates. 
 
@@ -102,16 +113,17 @@ class GSEAPlot(plot.Plot):
             ylabels = self.top_genesets
             xlabels = self.samples
 
-            data = np.zeros(shape=(len(xlabels), len(ylabels))) # Inititalize a 2-D array for the heatmap.
+            data = np.zeros(shape=(len(ylabels), len(xlabels))) # Inititalize a 2-D array for the heatmap.
             for i in range(len(xlabels)):
-                sample = ylabels[i]
+                sample = xlabels[i]
                 sample_data = self.data[sample]
 
                 for j in range(len(ylabels)):
-                    geneset = xlabels[j]
+                    geneset = ylabels[j]
                     p_value = sample_data[geneset] # Get the p-value associated with the geneset and sample.
                     
-                    data[i, j] = p_value # Assign the p-value to the correct pixel.
+                    data[j, i] = p_value # Assign the p-value to the correct pixel.
+            data = np.log10(1 + data) # Take the base-10 log of every element.
 
         elif style == 'barplot': # If the selected style is barplot...
             pass
@@ -121,11 +133,11 @@ class GSEAPlot(plot.Plot):
 
         return data 
 
-    def __plotter(self, axes, 
-                  color=None, 
-                  fontsize={}, 
-                  style='heatmap',
-                  sample=None):
+    def _plotter(self, axes, 
+                 color=None, 
+                 fontsize={}, 
+                 style='heatmap',
+                 sample=None):
         '''
 
         Parameters
@@ -134,16 +146,18 @@ class GSEAPlot(plot.Plot):
 
         '''
         # Initialize custom colors and fontsize.
-        default_colors = {'heatmap':'viridis', 'barplot':'turquoise'}
-        color = default_colors(style)
+        # NOTE: Color will never be None, as it is passed in in the Plot.plot() method
+        color = color[style] # Select the color corresponding to the specified style.
         x_fontsize = fontsize.get('x', 20)
         y_fontsize = fontsize.get('y', 20)
+        title_fontsize = fontsize.get('title', 30)
  
         # Get the data for plotting in the correct format for the specified style.
         data = self.__get_plotter_data(style)
         
         if style == 'heatmap':
-            axes.set_title('GSEA results')
+            axes.set_title('GSEA results', fontdict={'fontsize':title_fontsize})
+            axes.axis('off') # Stop borders from being plotted. 
             ylabels = self.top_genesets
             xlabels = self.samples
             
@@ -168,7 +182,7 @@ class GSEAPlot(plot.Plot):
             
             # Plot the heatmap on the main axes.
             cmap = plt.get_cmap(color) # Get the colormap.
-            data = -1 * data # Lower p-values are more significant, so make all values negative to better display on the heatmap.
+            data = -1 * data # Smaller p-values are more significant, so make all values negative to better display on the heatmap.
             vmin, vmax = np.min(data), np.max(data)
             mainax.imshow(data, cmap=cmap, aspect='auto', vmin=vmin, vmax=vmax)
 
@@ -180,13 +194,12 @@ class GSEAPlot(plot.Plot):
             xlabels = mainax.set_xticklabels(xlabels, fontdict={'fontsize':x_fontsize})
             for label in xlabels: # Make x-axis labels vertical.
                 label.set_rotation('vertical')
-       
+            
             # Add a colorbar to the colorbar axes.
             norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
             mappable = mpl.cm.ScalarMappable(norm=norm, cmap=cmap) # Turn the selected colormap into a ScalarMappable object.
-            cbar = plt.colorbar(mappable, cax=cax, ticks=[-2, 0, 2])
-            cbar.ax.set_title('p-value', fontdict={'fontsize':20})
-            cbar.ax.set_yticks([vmin, vmax]) # Set tick marks on the colorbar.
+            cbar = plt.colorbar(mappable, cax=cax, ticks=[vmin, vmax])
+            cbar.ax.set_title('log10(p-value)', fontdict={'fontsize':20})
             cbar.ax.set_yticklabels([f'{-1 * vmin}', f'{-1 * vmax}']) # When setting the y labels, make sure to flip the signs.
         
         elif style == 'barplot':
