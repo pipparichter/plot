@@ -9,8 +9,7 @@ import matplotlib.pyplot as plt
 class GSEAPlot(plot.Plot):
     '''
     '''
-    def __init__(self, # Should I include an option to initialize with a pop object?
-                 diffexp_data=None,
+    def __init__(self, obj, 
                  is_subplot=False,
                  geneset_file='c5bp'):
         '''
@@ -18,27 +17,30 @@ class GSEAPlot(plot.Plot):
         
         Parameters
         ----------
-        diffexp_data : dict
-
+        obj : data.Data
+            The Data object.
         is_subplot : bool
-
+            Whether or not the Plot is a subplot.
         geneset_file : str
-
+            The file storing the geneset data to be read in.
         '''
         # Parent class initialization ------------------------------
-        super().__init__(diffexp_data, is_subplot=is_subplot)
-        self.plotter = self._plotter
-        self.color= {'heatmap':'viridis', 'barplot':'turquoise'} # Initialize the default colors.
+        super().__init__(obj, 
+                         is_subplot=is_subplot,
+                         color={'heatmap':'Reds', 'barplot':'turquoise'},
+                         filename='gsea',
+                         plotter=self._plotter)
 
         # Inititalization -------------------------------------------------------------
         currpath = os.path.abspath(os.path.dirname(__file__)) # Get the filepath of this file.
         self.genesets = PA.load_dict(os.path.join(currpath, f'gsea/{geneset_file}.npy'))
         self.geneset_names = np.array(list(self.genesets.keys())) # A list of geneset names. 
-        
-        self.diffexp_data = diffexp_data
-        self.allgenes = diffexp_data['genes']
-        self.samples = diffexp_data['samples']
-        self.genelists = self.diffexp_data['diffexp']['samples'] # The dictionary storing the differentially-expressed genes by sample.
+       
+        assert obj.diffexp_genes is not None, \
+            'Differential expression analysis has not been carried out on the Data object.'
+        self.allgenes = obj.genes
+        self.genelists = obj.diffexp_by_sample # The dictionary storing the differentially-expressed genes by sample.
+        self.samples = obj.samples
 
         # Get the information for creating a hypergeometric distribution. 
         # NOTE: Variable naming conventions used are consistent with those in scipy.hypergeom.
@@ -58,9 +60,10 @@ class GSEAPlot(plot.Plot):
         data = {}
         for sample in self.samples:
             up_and_down = self.genelists[sample]  # Get the up and down-regulated genes.
-            genelist = np.concatenate((up_and_down['up'], up_and_down['down']))
+            genelist = np.concatenate((up_and_down['upregulated'], up_and_down['downregulated']))
+            # The case of len(genelist) == 0 is handled in __get_sample_data(). 
             data[sample] = self.__get_sample_data(genelist)
-        
+        print(data) 
         return data
 
     def __get_sample_data(self, genelist):
@@ -75,22 +78,25 @@ class GSEAPlot(plot.Plot):
         '''
         N = len(genelist) # The number of genes in the genelist. 
         
-        p_values = np.array([])
-        for geneset_name in self.geneset_names:
-            geneset_genes = self.genesets[geneset_name] # Get the genes in a geneset.
-            genes = genelist[np.in1d(genelist, geneset_genes)] # Get the list of genes in both the genelist and geneset.
-            k = len(genes) # The number of genes in both the geneset and genelist.
-            n = len(geneset_genes) # The number of genes in the geneset.
+        if N == 0: # If the genelist is empty, inititalize an array with np.nan.
+            p_values = np.full((len(self.genesets)), np.nan)
+        else: # If there are genes, calculate the p-value for each geneset and store in an array.
+            p_values = np.array([])
+            for geneset_name in self.geneset_names:
+                geneset_genes = self.genesets[geneset_name] # Get the genes in a geneset.
+                genes = genelist[np.in1d(genelist, geneset_genes)] # Get the list of genes in both the genelist and geneset.
+                k = len(genes) # The number of genes in both the geneset and genelist.
+                n = len(geneset_genes) # The number of genes in the geneset.
 
-            # NOTE: The 'survival function' is the same as the hypergeometric test. It is the same as 1 - cdf, or the 
-            # probability that more than k genes in the geneset would be present in the genelist if the distribution
-            # was random.
-            p_value = scipy.stats.hypergeom.sf(k, self.M, n, N) # Calculate the p-value.
-            p_values = np.append(p_values, p_value)
-        # Add the top genesets for the sample to the top_genesets list.
-        top = self.geneset_names[np.argsort(p_values)][:2]
-        self.top_genesets = np.append(self.top_genesets, top)
-        self.top_genesets = np.unique(self.top_genesets) # Remove any duplicates. 
+                # NOTE: The 'survival function' is the same as the hypergeometric test. It is the same as 1 - cdf, or the 
+                # probability that more than k genes in the geneset would be present in the genelist if the distribution
+                # was random.
+                p_value = scipy.stats.hypergeom.sf(k, self.M, n, N) # Calculate the p-value.
+                p_values = np.append(p_values, p_value)
+            # Add the top genesets for the sample to the top_genesets list.
+            top = self.geneset_names[np.argsort(p_values)][:2]
+            self.top_genesets = np.append(self.top_genesets, top)
+            self.top_genesets = np.unique(self.top_genesets) # Remove any duplicates. 
 
         sample_data = {}
         for geneset, p_value in zip(self.geneset_names.tolist(), p_values.tolist()):
@@ -123,7 +129,7 @@ class GSEAPlot(plot.Plot):
                     p_value = sample_data[geneset] # Get the p-value associated with the geneset and sample.
                     
                     data[j, i] = p_value # Assign the p-value to the correct pixel.
-            data = np.log10(1 + data) # Take the base-10 log of every element.
+            # data = np.log10(data) # Take the base-10 log of every element.
 
         elif style == 'barplot': # If the selected style is barplot...
             pass
@@ -147,7 +153,8 @@ class GSEAPlot(plot.Plot):
         '''
         # Initialize custom colors and fontsize.
         # NOTE: Color will never be None, as it is passed in in the Plot.plot() method
-        color = color[style] # Select the color corresponding to the specified style.
+        if isinstance(color, dict): # If the default is passed into plot...
+            color = color[style] # Select the color corresponding to the specified style.
         x_fontsize = fontsize.get('x', 20)
         y_fontsize = fontsize.get('y', 20)
         title_fontsize = fontsize.get('title', 30)
@@ -182,8 +189,9 @@ class GSEAPlot(plot.Plot):
             
             # Plot the heatmap on the main axes.
             cmap = plt.get_cmap(color) # Get the colormap.
-            data = -1 * data # Smaller p-values are more significant, so make all values negative to better display on the heatmap.
-            vmin, vmax = np.min(data), np.max(data)
+            data = -1 * data # Smaller p-values are more significant.
+            vmin, vmax = np.nanmin(data), np.nanmax(data)
+            print(vmin, vmax)
             mainax.imshow(data, cmap=cmap, aspect='auto', vmin=vmin, vmax=vmax)
 
             # Set the axes ticks. 

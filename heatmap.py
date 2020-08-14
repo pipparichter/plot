@@ -1,5 +1,4 @@
 import matplotlib as mpl
-import re
 import matplotlib.pyplot as plt
 import numpy as np
 import sklearn as skl
@@ -11,16 +10,12 @@ sys.path.insert(0, './popalign/popalign')
 import popalign as PA
 
 from plotpop import plot
-from plotpop import bar
 
 class HeatmapPlot(plot.Plot):
     '''
 
     '''
-    def __init__(self, 
-                 pop=None,
-                 diffexp_data=None,
-                 type_=None,
+    def __init__(self, obj,
                  is_subplot=False,
                  merge_samples=True,
                  genes=None, 
@@ -32,18 +27,13 @@ class HeatmapPlot(plot.Plot):
 
         Parameters
         ----------
-        pop : dict
-            The pop object.
-        diffexp_data : dict
-            The object storing information on differential expression. 
-        type_ : str
-            One of 'ct', rp'. This specifies what will be plotted on the Heatmap.
+        obj : data.Data
+            The Data object.
         is_subplot : bool
             Whether or not the heatmap is a subplot.
         genes : list
-            A list of genes to plot on the HeatmapPlot. This must be specified if the plot is initialized
-            with a pop obect. If initialized with diffexp_data, this defaults to the list of differentially-
-            expressed genes (diffexp_data['diffexp']['all'].
+            A list of genes to plot on the HeatmapPlot. If the object contains diffexp_genes, then this is 
+            set as the default gene list.
         samples : list
             A list of samples to plot on the HeatmapPlot. This is optional. It allows the user to manually
             adjust sample ordering or exclude samples from the analysis. 
@@ -52,24 +42,14 @@ class HeatmapPlot(plot.Plot):
         kwargs : N/A
             A series of keyword arguments, details of which are specified in the documentation. 
         '''
-        options = ['ct', 'rp']
-        assert type_ in options, f'The type_ parameter must be one of: {options}.'
-        self.type_ = type_
-           
         self.merge_samples = merge_samples
         
         # Parent class initialization --------------------------------------------------------
-        assert not (diffexp_data and pop), 'Only one of pop, diffexp_data may be given.'
-        if diffexp_data is not None:
-            obj = diffexp_data
-        elif pop is not None:
-            obj = pop
-        else:
-            raise Exception('At least one of pop, diffexp_data must be specified.')
-
-        super().__init__(obj, is_subplot=is_subplot) 
-        self.plotter = self._plotter
-        self.color = 'coolwarm'
+        super().__init__(obj, 
+                         is_subplot=is_subplot, 
+                         color='coolwarm', 
+                         filename='heatmap', 
+                         plotter=self._plotter) 
  
         # Clustering -----------------------------------------------------------------------
         self.cluster_ = cluster 
@@ -82,129 +62,56 @@ class HeatmapPlot(plot.Plot):
         self.clusters = {} # A dictionary in which to store the cluster groups. 
         self.lms = [None, None] # A list which will store the linkage matrices.
         
-        # Initialization with diffexp_data ----------------------------------------------------------        
-        if diffexp_data is not None:
-            # NOTE: All checks on the samples and genes were carried out in the get_diffexp_data()
-            # method in the plot module.
-            self.gene_order = diffexp_data['genes'] # The gene order for obtaining corresponding gene indices. 
-            self.samples_order = diffexp_data['samples'] # The sample order for obtaining corresponding sample indices.
-            if genes is None:
-                self.genes = diffexp_data['diffexp']['all'] 
-            else:
-                self.genes = genes
-            # Inititalize the samples attribute; if no sample list is specified, use diffexp['samples'].
-            if samples is None:
-                self.samples = np.array(diffexp_data['samples'])
-            else:
-                self.samples = samples
+        # Data inititalization ----------------------------------------------------------        
+        self.celltype = obj.celltype
+        self.gene_order = obj.genes # The gene order for obtaining corresponding gene indices. 
+        self.samples_order = obj.samples # The sample order for obtaining corresponding sample indices.
 
-            # This function initializes the following attributes: diffexp, upreg, downreg, all_l1s. 
-            self.__load_diffexp_data(diffexp_data)
+        # Inititalize the samples attribute; if no sample list is specified, use obj.samples.
+        if samples is None:
+            self.samples = np.array(obj.samples)
+        else:
+            self.samples = np.array(samples)
+       
+        if genes is None: # If no genes list is specified, try using the differential expression list.
+            assert obj.diffexp_genes is not None, 'A genes list must be specified.'
+            self.genes = obj.diffexp_genes
+        else: 
+            genes = np.array(genes)
+            # Remove the genes which are not also in the Data object.
+            self.genes = genes[np.in1d(genes, self.gene_order)] 
             
-            # Check that the inputted diffexp data is compatible with the plot type.
-            fltr = diffexp_data['filter'][0]
-            if self.type_ == 'ct':
-                assert fltr == 'celltype', \
-                        f'diffexp_data with filter {fltr} is incompatible with HeatmapPlot type ct.'
-                self.celltype = diffexp_data['filter'][1]
-            elif self.type_ == 'rp':
-                assert fltr == 'refpop', \
-                        f'diffexp_data with filter {fltr} is incompatible with HeatmapPlot type rp.'
-                self.refpop = diffexp_data['filter'][1]
+        # Data collection ------------------------------------------------------------------------
+        # NOTE: The Data object is passed in to avoid unnecessarily copying it to the Plot object.
+        self.data = self.__get_data(obj)
         
-            unsupervised = True # Gene selection was carried out using an unsupervised algorithm.
-            
-        # Standard initialization ------------------------------------------------------
-        elif pop is not None:
-            self.pop = pop # Store the pop object as an attribute.
-            self.ctrls = [s for s in pop['samples'].keys() if re.match(pop['controlstring'], s) is not None]
-            
-            assert genes is not None, 'A genes list must be specified when initializing with a pop object.'
-            self.genes = plot.check_genes(pop, genes)            
-            # Inititalize the samples attribute; if no sample list is specified, use pop['order'].
-            if samples is None:
-                samples = np.array(pop['order'])
-            self.samples = plot.check_samples(pop, samples=samples, filter_reps=merge_samples, filter_ctrls=True)
-            # If genes are specified in the arguments, assign them to self.genes. 
-
-            if self.type_ == 'ct': # Samples filtered by a celltype.
-                self.celltype = plot.check_celltype(pop, kwargs.get('celltype', None))
-            elif self.type_ == 'rp': # Samples filtered by a reference population.
-                self.refpop = kwargs.get('refpop', None)
-                self.ref = pop['ref'] # Store the name of the reference sample.
-                self.celltype = pop['samples'][self.ref]['gmm_types'][self.refpop] # Get the type of the subpopulation.
-            
-            unsupervised = False # A curated list of genes, and no precomputed L1 matrix, are being used.
-
-        # Parent class initialization (continued) ----------------------------------------------------------
-        # NOTE: These need to be set following the type-specific initialization for HeatmapPlots.
         self.ylabels = self.samples
         self.xlabels = self.genes 
         self.title = f'Expression in {self.celltype}'
 
-        # Data collection ------------------------------------------------------------------------
-        # Gather data without either using the precomputed diffexp object or with a pop object.
-        self.data = self.__s_get_data(unsupervised=unsupervised)
-        
         # Adjusting the filepath -------------------------------------------------------------
         self.filepath.append('heatmap') # Assign plot to 'heatmap' directory.
         self.filename = f'heatmap.png'
     
-    def __load_diffexp_data(self, diffexp_data):
-        '''
-        Load relevant data from a diffexp_data object into the HeatmapPlot. It stores all differentially 
-        up and down-regulated genes (in any sample), as well as the stairstep-order list of differentially
-        expressed genes and the 2-D pop['order'] by pop['filtered_genes'] array of L1 values. 
-        
-        Parameters
-        ----------
-        diffexp_data : dict
-            An object produced by the plot.get_diffexp_data() function which stores information
-            about differentially-expressed genes. 
-        '''
-        upreg, downreg = np.array([]), np.array([])
-        # Get lists of all genes differentially up or down-regulated in any sample.
-        for sample in self.samples:
-            upreg = np.append(upreg, diffexp_data['diffexp']['samples'][sample]['up'])
-            downreg = np.append(downreg, diffexp_data['diffexp']['samples'][sample]['down'])
-        
-        # Remove duplicates.
-        upreg = np.unique(upreg)
-        downreg = np.unique(downreg)
-        
-        # Inititalize the attributes.
-        self.diffexp = diffexp_data['diffexp']['all']
-        self.upreg = upreg
-        self.downreg = downreg
-        self.all_l1s = diffexp_data['l1s']
-
-    # S_* ------------------------------------------------------------------------------------------------ 
-    
-    def __s_get_data(self, unsupervised=False):
+    def __get_data(self, obj):
         '''
         Gets the data to be plotted on the heatmap. This function creates and
         returns a 2-D array with the rows corresponding to samples in self.samples and the columns corresponding
-        to genes. If the unsupervised option is set, unsupervised analysis is use to calculate all differentially
-        expressed genes.
+        to genes.
         
         Parameters
         ----------
-        unsupervised : bool
-            Whether :or not genes should be selected by an unsupervised algorithm.
+        obj : data.Data
+            A Data object.
         '''
-        if unsupervised: 
-            data_getter = self.__get_sample_data_unsupervised
-        else: # If a list of genes has been specified... 
-            data_getter = self.__get_sample_data
-        
         ngenes, nsamples = len(self.genes), len(self.samples)
         t0 = time.time() # Get the start time for performance info.
         data = np.zeros((nsamples, ngenes)) # Initialize an array where rows are samples and columns are genes.
         for i in range(nsamples):
                 sample = self.samples[i]
                 print(f'Gathering data for sample {i} of {nsamples}...    \r', end='')
-                sampledata = data_getter(sample=sample)
-                data[i]= sampledata # Add the L1 data to the data matrix.
+                sample_data = self.__get_sample_data(obj, sample=sample)
+                data[i]= sample_data # Add the L1 data to the data matrix.
         t1 = time.time()
         print(f'All sample data gathered: {int(t1 - t0)} seconds    ')
         
@@ -214,54 +121,25 @@ class HeatmapPlot(plot.Plot):
         
         return data
      
-    def __get_sample_data(self, sample=None):
-        '''
-        Retrieve the L1 norms for a certain sample for all specified genes.
-
-        Parameters
-        ----------
-        sample : str
-            The sample from which to collect data.
-        cutoff : float
-            Not for use in this function; argument is present for consistency.
-        merge_samples : bool
-        '''
-        genes = self.genes
-        if self.type_ == 'ct':
-            bar_type = 'g_s_ct'
-            bar_params = {'celltype':self.celltype}
-        elif self.type_ == 'rp':
-            bar_type = 'g_s_rp'
-            bar_params = {'refpop':self.refpop}
-        
-        l1s = np.array([])
-        for gene in genes:
-            bar_params.update({'gene':gene, 'sample':sample, 'merge_samples':True})
-            bp = bar.BarPlot(self.pop, type_=bar_type, **bar_params)    
-            l1 = bp.calculate_l1() # Get the L1 metric for the distribution (reference is control by default).
-            l1s = np.append(l1s, l1) # Add the L1 value.
-
-        return l1s
-    
-    def __get_sample_data_unsupervised(self, sample=None):
+    def __get_sample_data(self, obj, sample=None):
         '''
         This function uses the precomputed data in the inputted diffexp_data dictionary to retrieve data
         for the given sample. 
 
         Parameters
         ----------
+        obj : data.Data
+            The Data object.
         sample : str
             The sample for which to gather the data. 
         '''
         # NOTE: The L1 data is in the order of diffexp_data['genes'], so we must use that to get the
         # correct indices.
-        geneidxs = np.array([np.where(self.gene_order == gene)[0] for gene in self.genes])
-        # NOTE: The L1 data is in the order of pop['order'], so we must use the indices from that to 
-        # pull out the correct data.
-        sampleidx = np.where(np.array(self.samples_order == sample))[0] # Get the index of the sample.
-        l1s = self.all_l1s[sampleidx, geneidxs] # Filter by gene indices.
+        geneidxs = np.array([np.where(self.gene_order == gene)[0][0] for gene in self.genes])
+        sampleidx = np.where(np.array(self.samples_order) == sample)[0] # Get the index of the sample.
+        sample_l1s = np.array(obj.l1s)[sampleidx, geneidxs] # Filter by gene indices.
         
-        return l1s.flatten()
+        return sample_l1s.flatten()
 
     # Clustering ------------------------------------------------------------------------------------
     
@@ -393,8 +271,7 @@ class HeatmapPlot(plot.Plot):
     def _plotter(self, axes, 
                  color=None, 
                  cutoff=None,
-                 flip_axes=True,
-                 **kwargs):
+                 flip_axes=True):
         '''
         Plots a heatmap on the inputted axes.        
         

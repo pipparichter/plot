@@ -1,20 +1,19 @@
 import numpy as np
 from matplotlib import colors
-import popalign as PA
 import re
 
+from plotpop import data
 from plotpop import plot
-from plotpop.plot import get_ncells
 
 class BarPlot(plot.Plot):
     '''
     '''
-    def __init__(self, 
-                 pop=None,
-                 type_=None,
+    def __init__(self, obj,
+                 sample=None,
+                 gene=None,
                  nbins=25,
-                 is_subplot=False, 
-                 **kwargs):
+                 binmax=None,
+                 is_subplot=False):
         '''
         Initializes the BarPlot object.
 
@@ -22,80 +21,57 @@ class BarPlot(plot.Plot):
         ----------
         pop : dict
             The pop object.
-        type_ : str
-            The type of BarPlot to be graphed.
         nbins : int
             The number of bins into which to sort the data. Default is 25.
         is_subplot : bool
             Whether or not the plot is a subplot.
         '''
-        assert pop is not None, 'A pop object must be specified for a BarPlot.'
-        self.pop = pop
-        
-        self.gene = plot.check_gene(pop, kwargs.get('gene', None))
-        self.sample = plot.check_sample(pop, kwargs.get('sample', None))
-        self.geneidx = pop['filtered_genes'].index(self.gene)
-                   
-        self.merge_samples = kwargs.get('merge_samples', True)
-        if self.sample in self.ctrls: # Make sure merge_samples is off if the sample is a control.
+        assert obj.npops == 1, 'BarPlots can only be initialized with a Data object containing one PopAlign object'
+        pop = obj.pops[0] # Avoid storing the entire PopAlign object as an attribute.
+        self.celltype = obj.celltype
+
+        self.ctrls = [s for s in pop['samples'].keys() if re.match(pop['controlstring'], s) is not None]
+ 
+        self.merge_samples = obj.merge_samples
+        if sample in self.ctrls: # Make sure merge_samples is off if the sample is a control.
             self.merge_samples = False
 
-        # Parent class inititalization ------------------------------------------------------      
-        super().__init__(pop, is_subplot=is_subplot)
-        # Set the plotting function and default colors.
-        self.plotter = self._plotter
-        self.color = ('lightsalmon', 'turquoise')
-        self.title = f'{self.gene} in {self.sample} (self.celltype)'
+       # Parent class inititalization ------------------------------------------------------      
+        super().__init__(obj, 
+                         is_subplot=is_subplot, 
+                         filename='barplot',
+                         color=('lightsalmon', 'turquoise'), 
+                         plotter=self._plotter)
+        self.title = f'{gene} in {sample} ({self.celltype})'
         self.xtitle = 'expression level'
         self.ytitle = 'cell fraction'
- 
-        self.ctrls = [s for s in pop['samples'].keys() if re.match(pop['controlstring'], s) is not None]
-      
-        # Type-specific initialization ------------------------------------------------------
-        options = ['g_s_ct', 'g_s_rp', 'g_s']
-        assert type_ in options, f'The type_ parameter must be one of: {options}.'
         
-        if type_ == 'g_s_ct': # Distribution for a specific gene and sample, filtered by celltype.
-            self.celltype = plot.check_celltype(pop, kwargs.get('celltype', None))
-        elif type_ == 'g_s_rp': # Distribution for a specific gene and sample, filtered by reference population.
-            self.refpop = kwargs.get('refpop', None)
-            self.ref = pop['ref']
-            # Get the cell type of the reference subpopulation. 
-            self.celltype = pop['samples'][self.ref]['gmm_types'][self.refpop]
-        elif type_ == 'g_s': # Distribution for all cells for a specific gene and sample.
-            pass
+        # Initialization ---------------------------------------------------------------------- 
+        self.gene = data.check_gene(pop, gene)
+        self.geneidx = pop['filtered_genes'].index(self.gene)           
+        # The inputted sample should not be named.
+        self.sample = data.check_sample(pop, sample)
 
         self.bins = None # This will store the bin values.
         self.nbins = nbins
-        self.binmax = 0 # This will be the maximum bin value (i.e. bins[-1])
         self.ncells = 0 # This will be the number of cells represented by the distribution.
         self.mean, self.ctrl_mean = 0, 0 # The means of the data and controls.
 
-        # Populate the data, bin, and binmax attributes.
-        self.data = self.__g_s_get_data() 
+        if binmax is None:
+            self.binmax = self.__get_binmax(pop) # This will be the maximum bin value (i.e. bins[-1])
+        else: # Allows the user to specify a binmax.
+            self.binmax = binmax
 
-        # Adjust the filepath -------------------------------------------------------------------
-        self.filepath.append('barplots')
-        self.filename = f'barplot.png'
+        # Populate the data and bin attributes.
+        self.data = self.__get_data(pop) 
+
 
     # G_S_* --------------------------------------------------------------------
 
-    def __g_s_get_data(self):
+    def __get_data(self, pop):
         '''
         Initializes the data and bin attributes with data from the pop object.
         '''
-        # Assign the function which will be used for gathering the relevant indices. 
-        if self.type_ == 'g_s_ct':
-            idx_getter = self.__get_ct_idxs
-        elif self.type_ == 'g_s_rp':
-            idx_getter = self.__get_rp_idxs
-        elif self.type_ == 'g_s':
-            # This lambda function should return a numpy array with every index in the sample.
-            idx_getter = lambda sample : np.arange(get_ncells(self.pop, sample=sample))
-        
-        binmax = self.__g_s_binmax(idx_getter=idx_getter)
-        self.binmax = binmax # Store the binmax in the object.
-
         if self.binmax == 0.0: 
             # If there is no expression of the gene for the given celltype, initialize an array
             # of zeroes where the first element is 1 (100 percent of cells have no expression).
@@ -109,55 +85,33 @@ class BarPlot(plot.Plot):
  
         ctrl_arr, ctrl_ncells = np.array([]), 1 
         for ctrl in self.ctrls:
-            ctrl_idxs = idx_getter(ctrl) # Get the control data of the first control sample. 
-            ctrl_arr = np.append(ctrl_arr, self.pop['samples'][ctrl]['M_norm'].toarray()[self.geneidx][ctrl_idxs])
+            ctrl_idxs = self.__get_celltype_idxs(pop, sample=ctrl) # Get the control data of the first control sample. 
+            ctrl_arr = np.append(ctrl_arr, pop['samples'][ctrl]['M_norm'].toarray()[self.geneidx][ctrl_idxs])
             ctrl_ncells += len(ctrl_idxs)   
 
         self.ctrl_mean = np.mean(ctrl_arr) # Store the mean as an attribute.
-        ctrl_data, _ = np.histogram(ctrl_arr, bins=self.nbins, range=(0, binmax))
+        ctrl_data, _ = np.histogram(ctrl_arr, bins=self.nbins, range=(0, self.binmax))
         self.ctrl_data = ctrl_data / ctrl_ncells # Normalize the data by cell number.
         
-        idxs = idx_getter(self.sample)
+        idxs = self.__get_celltype_idxs(pop, sample=self.sample)
         ncells = len(idxs)
-        arr = self.pop['samples'][self.sample]['M_norm'].toarray()[self.geneidx][idxs]
+        arr = pop['samples'][self.sample]['M_norm'].toarray()[self.geneidx][idxs]
         
         rep = self.sample + '_rep'
         # If sample merging is turned on AND a replicate is present, merge the *_rep and sample data. 
-        if self.merge_samples and rep in self.pop['order']: 
-            rep_idxs = idx_getter(rep) 
-            arr = np.append(arr, self.pop['samples'][rep]['M_norm'].toarray()[self.geneidx][rep_idxs])
+        if self.merge_samples and rep in pop['order']: 
+            rep_idxs = self.__get_celltype_idxs(pop, sample=rep) 
+            arr = np.append(arr, pop['samples'][rep]['M_norm'].toarray()[self.geneidx][rep_idxs])
             ncells += len(rep_idxs) # Add the number of cells in the replicate sample to the total cell countself.
         
         self.mean = np.mean(arr) # Store the mean as an attribute.
-        data, bins = np.histogram(arr, bins=self.nbins, range=(0, binmax))
+        data, bins = np.histogram(arr, bins=self.nbins, range=(0, self.binmax))
         self.bins = bins # Store the bins in the object.
         self.ncells = ncells # Store the number of cells represented by the BarPlot.
         
         return data / ncells # Normalize the bin data and return.
     
-    def __get_rp_idxs(self, sample):
-        '''
-        Get the cell indices for cells in the specified sample belonging to the subpopulation which aligns with the reference 
-        population stored in self.refpop. 
-
-        Parameters
-        ----------
-        sample : str
-            The name of the sample for which to gather data. 
-        '''
-        alignments = self.pop['samples'][sample]['alignments'] # Get the alignments information for the specified sample.
-        r = np.where(alignments[:, 1] == self.refpop)[0] # Get the row index of the sample population aligned to refpop.
-        subpop = alignments[r, 0] # Get the aligned subpopulation. 
-        
-        # Get the subpopulation assignments of every cell in the test and reference samples.
-        c = PA.get_coeff(self.pop, sample)
-        assignments = self.pop['samples'][sample]['gmm'].predict(c)
-        # Get the indices of the cells which belong to refpop and the aligned test subpopulation.
-        subpopidxs = np.where(assignments == subpop)[0]
-        
-        return subpopidxs
-
-    def __get_ct_idxs(self, sample):
+    def __get_celltype_idxs(self, pop, sample):
         '''
         Gets the indices for the cells in the inputted sample corresponding to the celltype stored in 
         self.celltype. 
@@ -167,12 +121,12 @@ class BarPlot(plot.Plot):
         sample : str
             The name of the sample from which to retrieve data.
         '''
-        celltypes = np.array(self.pop['samples'][sample]['cell_type'])
-        cellidxs = np.where(celltypes == self.celltype)[0] # Get indices of cells with the correct celltype.
+        celltypes = np.array(pop['samples'][sample]['cell_type'])
+        celltype_idxs = np.where(celltypes == self.celltype)[0] # Get indices of cells with the correct celltype.
         
-        return cellidxs
+        return celltype_idxs
 
-    def __g_s_binmax(self, idx_getter=None):
+    def __get_binmax(self, pop):
         '''
         Gets the maximum gene expression value across all samples for a particular gene
         and celltype (namely self.gene and self.celltype).
@@ -184,9 +138,9 @@ class BarPlot(plot.Plot):
             used depends on the type of BarPlot being generated.
         '''
         binmax = 0.0    
-        for sample in self.pop['samples'].keys(): # Get the max gene expression value across all samples
-            idxs = idx_getter(sample)  # Get indices of cells with the correct celltype.
-            arr = self.pop['samples'][sample]['M_norm'].toarray()[self.geneidx][idxs] # Get gene data for a sample.
+        for sample in pop['samples'].keys(): # Get the max gene expression value across all samples
+            idxs = self.__get_celltype_idxs(pop, sample=sample)  # Get indices of cells with the correct celltype.
+            arr = pop['samples'][sample]['M_norm'].toarray()[self.geneidx][idxs] # Get gene data for a sample.
             
             if len(arr) == 0:
                 # NOTE: In one instance, I ran into a problem where one of the samples was empty (I verified this with
@@ -223,11 +177,11 @@ class BarPlot(plot.Plot):
         # NOTE: Remember to remove the last bin element to ensure len(self.bins) is equal to 
         # len(self.data[sample]).
         axes.bar(self.bins[:-1], self.ctrl_data, 
-                 color=colors.to_rgba(color[0], alpha=0.5), 
+                 color=colors.to_rgba(color[0], alpha=0.3), 
                  width=barwidth,
                  align='edge') # Add control data.
         axes.bar(self.bins[:-1], self.data, 
-                 color=colors.to_rgba(color[1], alpha=0.5), 
+                 color=colors.to_rgba(color[1], alpha=0.3), 
                  width=barwidth,
                  align='edge') # Add experimental data.
         
@@ -240,8 +194,8 @@ class BarPlot(plot.Plot):
             axes.set_xlim(xmin=0, xmax=self.binmax)
         else:
             axes.set_xlim(xmin=0, xmax=2.0)    
-        axes.set_xlabel(self.xtitle)
-        axes.set_ylabel(self.ytitle)
+        axes.set_xlabel(self.xtitle, fontdict={'fontsize':20})
+        axes.set_ylabel(self.ytitle, fontdict={'fontsize':20})
 
     def calculate_l1(self, ref=None):
         '''
@@ -268,34 +222,4 @@ class BarPlot(plot.Plot):
         
         return l1
 
-# Accessory functions -----------------------------------------------------------------------
 
-# NOTE: This function is a little redundant... It's main use is for flexibility, and so that
-# L1 values can be calculated with multiprocessing for sp HeatmapPlots.
-def calculate_l1(pop, gene, sample, merge_samples=True, **kwargs):
-    '''
-    Calculates the L1 norm for a particular gene in a particular sample relative to controls,
-    and returns it.
-
-    Parameters
-    ----------
-    pop : dict
-        The PopAlign object.
-    gene : str 
-        A valid gene name.
-    sample : str
-        A valid sample name. 
-    '''
-    if kwargs.get('celltype', None) is not None:
-        bar_type = 'g_s_ct'
-    elif kwargs.get('refpop', None) is not None:
-        bar_type = 'g_s_rp'
-    else: # If no filter is specified...
-        bar_type = 'g_s' # The distribution will be general. 
-
-    params = {'gene':gene, 'sample':sample, 'merge_samples':merge_samples}
-    params.update(kwargs) # Add the keyword argument to parameters. 
-    bar = BarPlot(pop, type_=bar_type, **params) 
-    l1 = bar.calculate_l1()
-    
-    return l1 
