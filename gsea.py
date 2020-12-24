@@ -189,9 +189,8 @@ class GSEAPlot(plot.Plot):
             
             # Plot the heatmap on the main axes.
             cmap = plt.get_cmap(color) # Get the colormap.
-            data = -1 * data # Smaller p-values are more significant.
+            data = -1 * np.log10(data) # Smaller p-values are more significant.
             vmin, vmax = np.nanmin(data), np.nanmax(data)
-            print(vmin, vmax)
             mainax.imshow(data, cmap=cmap, aspect='auto', vmin=vmin, vmax=vmax)
 
             # Set the axes ticks. 
@@ -207,8 +206,8 @@ class GSEAPlot(plot.Plot):
             norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
             mappable = mpl.cm.ScalarMappable(norm=norm, cmap=cmap) # Turn the selected colormap into a ScalarMappable object.
             cbar = plt.colorbar(mappable, cax=cax, ticks=[vmin, vmax])
-            cbar.ax.set_title('log10(p-value)', fontdict={'fontsize':20})
-            cbar.ax.set_yticklabels([f'{-1 * vmin}', f'{-1 * vmax}']) # When setting the y labels, make sure to flip the signs.
+            cbar.ax.set_title('-log10(p-value)', fontdict={'fontsize':20})
+            cbar.ax.set_yticklabels([f'{vmin}', f'{vmax}']) # When setting the y labels, make sure to flip the signs.
         
         elif style == 'barplot':
             pass
