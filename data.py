@@ -85,10 +85,34 @@ class Data():
                 self.l1s = self.__get_l1s() # If L1 values have not yet been calculated, calculate them.
             self.cutoff = cutoff
             self.__get_diffexp_data(cutoff=cutoff)
+
+        # Retrieve a combined data matrix ---------------------------------------------
+        self.mtx = self.__get_mtx()
     
+    def __get_mtx(self):
+        '''
+        Collect data for the specified celltype across all given samples. 
+        '''
+        # Build a matrix with each row representing a sample, and each column representing data for
+        # a particular cell. 
+        mtx = []
+        sample_labels = []
+        
+        for pop in self.pops:
+            name = pop['name']
+            for sample in pop['samples']:
+                celltype_idxs = np.where(self.pop['samples'][sample]['cell_type'] == self.celltype)
+                # Get the data from the original M matrix, which is normalized but not filtered. 
+                # The M matrix has a column corresponding to each cell, and a row for each gene.
+                mtx.append(pop['samples'][sample]['M'][:, celltype_idxs])
+                sample_labels.append([f'{sample}_{name}'] * len(celltype_idxs))
+        
+        self.mtx = scipy.sparse.hstack(mtx) # This concatenates the columns of all columns stored in the mtx list.
+        self.sample_labels = np.hstack(sample_labels)
+
     def __get_named_samples(self, order=[]):
         '''
-        Takes in a list of pop objects and returns a list of sampled with pop['name'] appended.
+        Takes in a list of pop objects and returns a list of samples with pop['name'] appended.
         If an ordering is specified, the rearranged sample list is returned. 
 
         Parameters

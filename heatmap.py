@@ -17,7 +17,7 @@ class HeatmapPlot(plot.Plot):
     '''
     def __init__(self, obj,
                  is_subplot=False,
-                 merge_samples=True,
+                 # merge_samples=True,
                  genes=None, 
                  samples=None,
                  cluster=True, 
@@ -42,7 +42,7 @@ class HeatmapPlot(plot.Plot):
         kwargs : N/A
             A series of keyword arguments, details of which are specified in the documentation. 
         '''
-        self.merge_samples = merge_samples
+        self.merge_samples = obj.merge_samples
         
         # Parent class initialization --------------------------------------------------------
         super().__init__(obj, 

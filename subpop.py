@@ -3,6 +3,7 @@ import scipy.sparse
 import plot
 import sklearn.manifold
 import sklearn.decomposition
+import matplotlib as plt
 
 import popalign as PA
 
@@ -15,10 +16,8 @@ class SubpopPlot(plot.Plot):
     def __init__(self, obj,
         is_subplot=False,
         filename=None,
-        color=None,
-        plotter=None,
-        samples=None,
-        celltype=None,
+        # samples=None,
+        # celltype=None,
         **kwargs):
         '''
         This function intantiates an object belonging to the SubpopPlot class.
@@ -32,36 +31,38 @@ class SubpopPlot(plot.Plot):
 
 
         '''
+        self.merge_sample = obj.merge_samples 
 
         # Parent class initialization --------------------------------------------------------
         super().__init__(obj, 
                 is_subplot=is_subplot,
-                color='coolwarm', 
+                color=None, 
                 filename='subpop', 
                 plotter=self._plotter)
 
-        if self.samples is None:
-            self.samples = self.pop['samples'] # If no sample is specified, use all samples. 
+        # if self.samples is None:
+        self.samples = obj.samples # If no sample is specified, use all samples. 
 
         # assert(celltype is not None, "A celltype must be specified for this Plot type.")
-        self.celltype = celltype
+        self.celltype = obj.celltype
 
         # Relevant values stored in the class -----------------------------------------------
         
         # Values to be populated by the __get_data function.
         self.log_cvs = None
         self.log_means = None
-        offset = kwargs.get('offset', 1.1)    
+        offset = kwargs.get('offset', 1.5)    
         self.mtx = None
+        self.sample_labels = None # Stores the names of the samples in the matrix (for graphing). 
         self.filtered_mtx = None
         self.filtered_genes = None
 
         self.__get_data(offset)
 
         # Values to be populated when dimensionality reduction is carried out.
-        self.nfeats = None
+        self.nfeats = kwargs.get("nfeats", 20)
         self.onmf_A = None
-        self.onmf_B = None
+        self.onmf_B = None # Cells by features. 
         self.pca = None
 
         # Values to be populated when clustering is carried out.
@@ -77,13 +78,16 @@ class SubpopPlot(plot.Plot):
         # Build a matrix with each row representing a sample, and each column representing data for
         # a particular cell. 
         mtx = []
+        sample_labels = []
         for sample in self.samples:
             celltype_idxs = np.where(self.pop['samples'][sample]['cell_type'] == self.celltype)
             # Get the data from the original M matrix, which is normalized but not filtered. 
             # The M matrix has a column corresponding to each cell, and a row for each gene.
             mtx.append(self.pop['samples'][sample]['M'][:, celltype_idxs])
+            sample_labels.append([sample] * len(celltype_idxs))
         mtx = scipy.sparse.hstack(mtx) # This concatenates the columns of all columns stored in the mtx list.
         
+        self.sample_labels = np.hstack(sample_labels)
         self.mtx = mtx
         self.filtered_mtx = self.__filter_data(mtx, offset)
 
@@ -117,7 +121,7 @@ class SubpopPlot(plot.Plot):
         '''
         self.log_cvs, self.log_means, self.nonzero_idxs = mu_sigma(self.mtx)
 
-    def __pca(self, nfeats):
+    def pca(self, nfeats):
         '''
         Run PCA on the data and store the results.
         '''
@@ -135,7 +139,7 @@ class SubpopPlot(plot.Plot):
         # The matrix stored is like the original data matrix, but with the gene axis replaced by features. 
         self.pca = model.fit_transform(self.data.to_array().T)
 
-    def __onmf(self, nfeats):
+    def onmf(self, nfeats):
         '''
         Run orthogonal nonnegatice matrix factorization (oNMF) on the data and store the results. 
         '''
@@ -153,7 +157,7 @@ class SubpopPlot(plot.Plot):
         for i in range(self.mtx.shape[1]):
             # Call the nnls function, iterating over each column.
             new_B.append(PA.nnls(A, self.filtered_mtx[:,i].toarray().flatten()))
-        B = np.vstack(new_B).T
+        B = np.vstack(new_B) # NOTE: Don't take transpose here (as is done in the pipeline) for consistency with PCA. 
         
         self.onmf_A = A
         self.onmf_B = B
@@ -161,16 +165,25 @@ class SubpopPlot(plot.Plot):
             
     # NOTE: Figure out how to get this to work with oNMF -- see if the results are any different. 
     # I'm pretty sure the second matrix from oNMF is the same as the matrix from PCA. 
-    def __cluster(self, nclusters=13, nfeats=14, method='pca'):
+    def cluster(self, nclusters=13, method='pca'):
         '''
         Runs a kmeans clustering algorithm on the data.
         '''
         if method == 'pca':
-            self.kmeans = sklearn.cluster.KMeans(n_clusters=nclusters, random_state=0).fit(self.pca)
+            arr = self.pca # Cells by features array. 
         elif method == 'onmf':
-            self.kmeans = sklearn.cluster.KMeans(n_clusters=nclusters, random_state=0).fit(self.onmf_B)
+            if self.onmf_B is not None:
+                arr = self.onmf_B # Cells by features array.
         else:
             raise Exception('A valid method must be entered (either pca or onmf)')
+        if arr is None:
+            answer = input(f"{method.upper} has not yet been run. Proceed with {method.upper} (y/n)? ", end='')
+            print()
+            if answer == 'n':
+                return
+            elif answer == 'y':
+                eval(f"self.{method}({self.nfeats})")
+        self.kmeans = sklearn.cluster.KMeans(n_clusters=nclusters, random_state=0).fit(arr)
         
         mtx_by_cluster = {}
         # Store each cluster as its own matrix.
@@ -187,6 +200,69 @@ class SubpopPlot(plot.Plot):
         '''
         '''
         
+        pass
+
+    def __plot_tsne(self, by='cluster', samples=None):
+        '''
+        Creates a tSNE plot for all cells in the experiment, which color overlayed demarcating the specified samples. 
+        If samples is None, then all samples are used by default.
+        '''
+        if by == 'cluster':
+            if self.kmeans is None: # If the clustering algorithm has not yet been run...
+                print("Default clustering settings used. nclusters=13, method='pca'.")
+                self.cluster()
+            self.__plot_cluster_tsne()
+        elif by == 'sample':
+            if samples is None:
+                samples = self.samples
+            self.__plot_sample_tsne(samples)
+
+
+    def __plot_sample_tsne(self, axes, samples, cmap):
+        '''
+        Creates a tSNE plot with points labelled according to sample. 
+        '''
+        idxs = [] # This will be a list of numpy arrays.
+        for sample in samples:
+            sample_idxs = np.where(self.sample_labels == sample)
+            idxs.append(sample_idxs)
+
+        cmap = plt.get_cmap(cmap, len(idxs)) # Use len(idxs) instead of len(samples) to account for possible rep merging. 
+        axes.scatter(self.tsne[:, 0], self.tsne[:, 1], cmap=cmap)
+
+
+    def __plot_cluster_tsne(self, axes, cmap):
+        '''
+        '''
+        pass
+
+
+    def tsne(self, method='pca'):
+        '''
+        Generated TSNE coordinates using the previously generated PCA projection or oNMF.
+        The coordinates are stored in the object.
+        '''
+        if method == 'pca':
+            arr = self.pca # Cells by features array. 
+        if method == 'onmf':
+            if self.onmf_B is not None:
+                arr = self.onmf_B # Cells by features array.
+        else:
+            raise Exception('A valid method must be entered (either pca or onmf)')
+        if arr is None:
+            answer = input(f"{method.upper} has not yet been run. Proceed with {method.upper} (y/n)? ", end='')
+            print()
+            if answer == 'n':
+                return
+            elif answer == 'y':
+                eval(f"self.{method}({self.nfeats})")
+
+        self.tsne = sklearn.decomposition.TSNE(n_components=2).fit_transform(arr)
+
+
+    def __plot_heatmap():
+        '''
+        '''
         pass
  
 
